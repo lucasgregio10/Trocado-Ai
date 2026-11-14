@@ -24,7 +24,7 @@ export function TrocadoLogo({ className = 'w-8 h-8' }: { className?: string }) {
 }
 
 interface SafeImageProps {
-  src?: string;
+  src?: string | null;
   alt: string;
   className?: string;
   fallbackType?: 'avatar' | 'receipt';

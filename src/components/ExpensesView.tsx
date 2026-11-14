@@ -7,109 +7,134 @@ import {
   Camera,
   Mic,
   PenLine,
-  Building2,
   Receipt,
 } from 'lucide-react';
-import { Expense, ExpenseOrigin } from '../types/finance';
-import { formatBRL, formatDateHeader, exportExpensesToCSV } from '../utils/formatters';
+import { Category, Expense, ExpenseSource } from '../types/finance';
+import {
+  EXPENSE_SOURCE_LABELS,
+  PAYMENT_METHOD_LABELS,
+  exportExpensesToCSV,
+  formatCentsBRL,
+  formatDateHeader,
+} from '../utils/formatters';
 import { CategoryIcon, getCategoryColor } from './CategoryIcon';
 
 interface ExpensesViewProps {
   expenses: Expense[];
-  categories: string[];
+  categories: Category[];
+  isLoading?: boolean;
   onSelectExpense: (expense: Expense) => void;
   onOpenNewExpense: () => void;
-  initialSearch?: string;
 }
 
-const ORIGIN_META: Record<
-  ExpenseOrigin,
-  { label: string; icon: React.FC<{ className?: string }>; isAi: boolean }
-> = {
-  ai_scanner: { label: 'IA Scanner', icon: Camera, isAi: true },
-  ai_audio: { label: 'Áudio IA', icon: Mic, isAi: true },
-  ai_text: { label: 'Texto IA', icon: Sparkles, isAi: true },
-  open_finance: { label: 'Open Finance', icon: Building2, isAi: true },
-  manual: { label: 'Manual', icon: PenLine, isAi: false },
+const SOURCE_ICONS: Record<ExpenseSource, React.FC<{ className?: string }>> = {
+  foto: Camera,
+  voz: Mic,
+  texto: Sparkles,
+  manual: PenLine,
 };
 
 export function ExpensesView({
   expenses,
   categories,
+  isLoading = false,
   onSelectExpense,
   onOpenNewExpense,
-  initialSearch = '',
 }: ExpensesViewProps) {
-  const [search, setSearch] = useState(initialSearch);
-  const [selectedCategory, setSelectedCategory] = useState<string>('Todos');
-  const [selectedOrigin, setSelectedOrigin] = useState<string>('all');
+  const [search, setSearch] = useState('');
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>('all');
+  const [selectedSource, setSelectedSource] = useState<string>('all');
   const [sortBy, setSortBy] = useState<'recent' | 'highest' | 'lowest'>('recent');
+
+  const categoryMap = useMemo(
+    () => new Map(categories.map((c) => [c.id, c])),
+    [categories]
+  );
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return expenses
       .filter((e) => {
-        if (selectedCategory !== 'Todos' && e.category !== selectedCategory) return false;
-        if (selectedOrigin === 'ai' && e.origin === 'manual') return false;
-        if (selectedOrigin === 'manual' && e.origin !== 'manual') return false;
+        if (selectedCategoryId !== 'all' && e.categoryId !== selectedCategoryId) return false;
+        if (selectedSource === 'ai' && e.source === 'manual') return false;
+        if (selectedSource === 'manual' && e.source !== 'manual') return false;
         if (q) {
-          const hay = `${e.merchant} ${e.category} ${e.subcategory} ${e.paymentMethod} ${e.notes || ''}`.toLowerCase();
+          const catName = e.categoryName || categoryMap.get(e.categoryId)?.name || '';
+          const hay = `${e.merchant} ${catName} ${e.subcategory || ''} ${e.description || ''} ${
+            PAYMENT_METHOD_LABELS[e.paymentMethod]
+          }`.toLowerCase();
           if (!hay.includes(q)) return false;
         }
         return true;
       })
       .sort((a, b) => {
-        if (sortBy === 'highest') return b.amount - a.amount;
-        if (sortBy === 'lowest') return a.amount - b.amount;
-        return `${b.date}T${b.time}`.localeCompare(`${a.date}T${a.time}`);
+        if (sortBy === 'highest') return b.amountCents - a.amountCents;
+        if (sortBy === 'lowest') return a.amountCents - b.amountCents;
+        const dateCmp = b.expenseDate.localeCompare(a.expenseDate);
+        if (dateCmp !== 0) return dateCmp;
+        return b.createdAt.localeCompare(a.createdAt);
       });
-  }, [expenses, search, selectedCategory, selectedOrigin, sortBy]);
+  }, [expenses, search, selectedCategoryId, selectedSource, sortBy, categoryMap]);
 
-  const totalFiltered = useMemo(
-    () => filtered.reduce((s, e) => s + e.amount, 0),
+  const totalFilteredCents = useMemo(
+    () => filtered.reduce((s, e) => s + e.amountCents, 0),
     [filtered]
   );
 
   const aiCount = useMemo(
-    () => filtered.filter((e) => e.origin !== 'manual').length,
+    () => filtered.filter((e) => e.source !== 'manual').length,
     [filtered]
   );
 
   const groupedByDate = useMemo(() => {
-    const groups: Array<{ date: string; subtotal: number; items: Expense[] }> = [];
+    const groups: Array<{ date: string; subtotalCents: number; items: Expense[] }> = [];
     const map = new Map<string, Expense[]>();
     for (const e of filtered) {
-      const list = map.get(e.date) || [];
+      const list = map.get(e.expenseDate) || [];
       list.push(e);
-      map.set(e.date, list);
+      map.set(e.expenseDate, list);
     }
     for (const [date, items] of map.entries()) {
       groups.push({
         date,
-        subtotal: items.reduce((s, x) => s + x.amount, 0),
+        subtotalCents: items.reduce((s, x) => s + x.amountCents, 0),
         items,
       });
     }
     return groups;
   }, [filtered]);
 
+  if (isLoading) {
+    return (
+      <div className="space-y-4 animate-pulse">
+        <div className="h-8 w-56 rounded-lg bg-slate-200 dark:bg-[#1C2025]" />
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="h-24 rounded-2xl bg-slate-200 dark:bg-[#151B23]" />
+          <div className="h-24 rounded-2xl bg-slate-200 dark:bg-[#151B23]" />
+          <div className="h-24 rounded-2xl bg-slate-200 dark:bg-[#151B23]" />
+        </div>
+        <div className="h-64 rounded-2xl bg-slate-200 dark:bg-[#151B23]" />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
             Todas as Despesas
           </h1>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-            Gerencie, audite e filtre lançamentos manuais, cartões integrados e comprovantes via OCR.
+            Gerencie, filtre e audite seus lançamentos registrados.
           </p>
         </div>
         <div className="flex items-center gap-2.5 shrink-0">
           <button
             type="button"
+            disabled={filtered.length === 0}
             onClick={() => exportExpensesToCSV(filtered)}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] hover:bg-slate-50 dark:hover:bg-[#1C2025] text-sm font-medium text-slate-700 dark:text-slate-200 transition-colors whitespace-nowrap"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] hover:bg-slate-50 dark:hover:bg-[#1C2025] disabled:opacity-50 text-sm font-medium text-slate-700 dark:text-slate-200 transition-colors whitespace-nowrap"
           >
             <Download className="w-4 h-4" />
             Exportar CSV
@@ -130,10 +155,10 @@ export function ExpensesView({
         <div className="rounded-2xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] p-5">
           <p className="text-xs text-slate-500 dark:text-slate-400">Total Filtrado</p>
           <p className="text-2xl font-bold text-slate-900 dark:text-white font-mono-tabular mt-1">
-            {formatBRL(totalFiltered)}
+            {formatCentsBRL(totalFilteredCents)}
           </p>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 font-mono-tabular">
-            {filtered.length} transações no período
+            {filtered.length} {filtered.length === 1 ? 'transação' : 'transações'}
           </p>
         </div>
         <div className="rounded-2xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] p-5">
@@ -148,10 +173,10 @@ export function ExpensesView({
         <div className="rounded-2xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] p-5">
           <p className="text-xs text-slate-500 dark:text-slate-400">Média por Despesa</p>
           <p className="text-2xl font-bold text-slate-900 dark:text-white font-mono-tabular mt-1">
-            {formatBRL(filtered.length ? totalFiltered / filtered.length : 0)}
+            {formatCentsBRL(filtered.length ? Math.round(totalFilteredCents / filtered.length) : 0)}
           </p>
-          <p className="text-xs text-emerald-600 dark:text-[#4EDEA3] mt-1 font-mono-tabular">
-            -4,2% vs. mês anterior
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+            Com base no filtro atual
           </p>
         </div>
       </div>
@@ -165,21 +190,21 @@ export function ExpensesView({
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Buscar por estabelecimento, categoria, cartão..."
+              placeholder="Buscar por estabelecimento, categoria ou descrição..."
               className="w-full pl-10 pr-4 py-2 rounded-xl border border-slate-200 dark:border-[#222C38] bg-slate-50 dark:bg-[#0B0F14] text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500"
             />
           </div>
 
           <div className="flex items-center gap-2">
             <select
-              value={selectedOrigin}
-              onChange={(e) => setSelectedOrigin(e.target.value)}
+              value={selectedSource}
+              onChange={(e) => setSelectedSource(e.target.value)}
               aria-label="Filtrar por origem"
               className="px-3 py-2 rounded-xl border border-slate-200 dark:border-[#222C38] bg-slate-50 dark:bg-[#0B0F14] text-sm text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
             >
               <option value="all">Todas as origens</option>
-              <option value="ai">Registrado por IA / Open Finance</option>
-              <option value="manual">Lançamento Manual</option>
+              <option value="ai">Registrado por IA</option>
+              <option value="manual">Manual</option>
             </select>
 
             <select
@@ -196,18 +221,29 @@ export function ExpensesView({
         </div>
 
         <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
-          {['Todos', ...categories].map((cat) => (
+          <button
+            type="button"
+            onClick={() => setSelectedCategoryId('all')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+              selectedCategoryId === 'all'
+                ? 'bg-emerald-500 text-[#0B0F14] font-semibold'
+                : 'bg-slate-100 dark:bg-[#1C2025] text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            Todas
+          </button>
+          {categories.map((cat) => (
             <button
-              key={cat}
+              key={cat.id}
               type="button"
-              onClick={() => setSelectedCategory(cat)}
+              onClick={() => setSelectedCategoryId(cat.id)}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                selectedCategory === cat
+                selectedCategoryId === cat.id
                   ? 'bg-emerald-500 text-[#0B0F14] font-semibold'
                   : 'bg-slate-100 dark:bg-[#1C2025] text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
-              {cat}
+              {cat.name}
             </button>
           ))}
         </div>
@@ -215,21 +251,34 @@ export function ExpensesView({
 
       {/* Grouped Expense List */}
       {groupedByDate.length === 0 ? (
-        <div className="rounded-2xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] p-12 text-center">
+        <div className="rounded-2xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] p-12 text-center space-y-3">
           <p className="text-sm font-medium text-slate-900 dark:text-white">
-            Nenhuma despesa encontrada para os filtros aplicados.
+            {expenses.length === 0
+              ? 'Você ainda não possui despesas registradas.'
+              : 'Nenhuma despesa encontrada para os filtros aplicados.'}
           </p>
-          <button
-            type="button"
-            onClick={() => {
-              setSearch('');
-              setSelectedCategory('Todos');
-              setSelectedOrigin('all');
-            }}
-            className="mt-3 text-xs font-semibold text-emerald-600 dark:text-[#4EDEA3] hover:underline"
-          >
-            Limpar filtros
-          </button>
+          {expenses.length === 0 ? (
+            <button
+              type="button"
+              onClick={onOpenNewExpense}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-[#0B0F14] font-semibold text-xs"
+            >
+              <Plus className="w-4 h-4" />
+              Registrar Primeira Despesa
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setSearch('');
+                setSelectedCategoryId('all');
+                setSelectedSource('all');
+              }}
+              className="text-xs font-semibold text-emerald-600 dark:text-[#4EDEA3] hover:underline"
+            >
+              Limpar filtros
+            </button>
+          )}
         </div>
       ) : (
         <div className="space-y-6">
@@ -241,14 +290,18 @@ export function ExpensesView({
                 </h2>
                 <span className="text-xs font-medium text-slate-600 dark:text-slate-300 font-mono-tabular">
                   {group.items.length} {group.items.length === 1 ? 'despesa' : 'despesas'} · Subtotal:{' '}
-                  {formatBRL(group.subtotal)}
+                  {formatCentsBRL(group.subtotalCents)}
                 </span>
               </div>
 
               <div className="rounded-2xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] divide-y divide-slate-100 dark:divide-[#222C38]">
                 {group.items.map((exp) => {
-                  const originInfo = ORIGIN_META[exp.origin] || ORIGIN_META.manual;
-                  const OriginIcon = originInfo.icon;
+                  const cat = categoryMap.get(exp.categoryId);
+                  const catName = exp.categoryName || cat?.name || 'Outros';
+                  const catColor = exp.categoryColor || cat?.color || getCategoryColor(catName);
+                  const OriginIcon = SOURCE_ICONS[exp.source] || PenLine;
+                  const isAi = exp.source !== 'manual';
+
                   return (
                     <button
                       key={exp.id}
@@ -260,11 +313,11 @@ export function ExpensesView({
                         <div
                           className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
                           style={{
-                            backgroundColor: `${getCategoryColor(exp.category)}18`,
-                            color: getCategoryColor(exp.category),
+                            backgroundColor: `${catColor}18`,
+                            color: catColor,
                           }}
                         >
-                          <CategoryIcon category={exp.category} className="w-4 h-4" />
+                          <CategoryIcon category={catName} className="w-4 h-4" />
                         </div>
 
                         <div className="min-w-0">
@@ -272,7 +325,7 @@ export function ExpensesView({
                             <span className="text-sm font-semibold text-slate-900 dark:text-white truncate">
                               {exp.merchant}
                             </span>
-                            {exp.receiptImage && (
+                            {exp.receiptKey && (
                               <Receipt
                                 className="w-3.5 h-3.5 text-emerald-500 shrink-0"
                                 aria-label="Comprovante anexado"
@@ -280,21 +333,19 @@ export function ExpensesView({
                             )}
                           </div>
                           <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 mt-0.5 flex-wrap">
-                            <span>{exp.category}</span>
+                            <span>{catName}</span>
                             <span aria-hidden="true">·</span>
-                            <span>{exp.paymentMethod}</span>
-                            <span aria-hidden="true">·</span>
-                            <span className="font-mono-tabular">{exp.time}</span>
+                            <span>{PAYMENT_METHOD_LABELS[exp.paymentMethod]}</span>
                             <span aria-hidden="true">·</span>
                             <span
                               className={`inline-flex items-center gap-1 ${
-                                originInfo.isAi
+                                isAi
                                   ? 'text-violet-600 dark:text-violet-300'
                                   : 'text-slate-500 dark:text-slate-400'
                               }`}
                             >
                               <OriginIcon className="w-3 h-3" />
-                              {originInfo.label}
+                              {EXPENSE_SOURCE_LABELS[exp.source]}
                             </span>
                           </div>
                         </div>
@@ -302,10 +353,7 @@ export function ExpensesView({
 
                       <div className="text-right shrink-0">
                         <p className="text-sm font-bold text-slate-900 dark:text-white font-mono-tabular">
-                          -{formatBRL(exp.amount)}
-                        </p>
-                        <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">
-                          {exp.status}
+                          -{formatCentsBRL(exp.amountCents)}
                         </p>
                       </div>
                     </button>

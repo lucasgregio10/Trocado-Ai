@@ -8,79 +8,54 @@ export type ActiveView =
 
 export type PeriodFilter = 'month' | '30d' | 'year';
 
-export type ExpenseOrigin = 'ai_scanner' | 'ai_audio' | 'ai_text' | 'manual' | 'open_finance';
+export type PaymentMethod = 'pix' | 'credito' | 'debito' | 'dinheiro' | 'outro';
 
-export type CategoryName =
-  | 'Alimentação'
-  | 'Moradia'
-  | 'Transporte'
-  | 'Lazer'
-  | 'Saúde'
-  | 'Educação'
-  | 'Outros'
-  | string;
+export type ExpenseSource = 'foto' | 'texto' | 'voz' | 'manual';
 
-export interface ExpenseItem {
+export interface Profile {
+  userId: string;
+  email: string;
+  displayName: string;
+  theme: 'light' | 'dark';
+  createdAt: string;
+}
+
+export interface Category {
+  id: string;
   name: string;
-  quantity: string;
-  price: number;
+  color: string;
+  icon: string;
+  isDefault: boolean;
+  createdAt: string;
 }
 
 export interface Expense {
   id: string;
+  amountCents: number;
   merchant: string;
-  cnpj?: string;
-  amount: number;
-  date: string; // YYYY-MM-DD
-  time: string; // HH:MM
-  category: CategoryName;
-  subcategory: string;
-  paymentMethod: string;
-  origin: ExpenseOrigin;
-  confidence?: number;
-  receiptImage?: string;
-  items?: ExpenseItem[];
-  notes?: string;
-  status: 'Conciliado' | 'Liquidado' | 'Pendente';
+  description: string | null;
+  categoryId: string;
+  categoryName?: string;
+  categoryColor?: string;
+  categoryIcon?: string;
+  subcategory: string | null;
+  paymentMethod: PaymentMethod;
+  expenseDate: string; // AAAA-MM-DD
+  source: ExpenseSource;
+  aiConfidence: number | null;
+  receiptKey: string | null;
+  receiptUrl?: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
-export interface CategoryBudget {
-  id: string;
-  category: CategoryName;
-  description: string;
-  limit: number;
-  color: string;
-  iconKey: string;
-  isFixed?: boolean;
-}
-
-export interface SavingsGoal {
-  id: string;
-  title: string;
-  target: number;
-  current: number;
-  deadline: string;
-  monthlyContribution: number;
-  color: string;
-}
-
-export interface BankConnection {
-  id: string;
-  bankName: string;
-  legalName: string;
-  shortCode: string;
-  accentColor: string;
-  status: 'connected' | 'reauth_required';
-  lastSyncLabel: string;
-  autoSync: boolean;
-  consentUntil: string;
-  accounts: Array<{
-    title: string;
-    subtitle: string;
-    balanceOrStatus: string;
-    type: 'card' | 'checking' | 'investment';
-  }>;
-  scopes: string[];
+export interface Budget {
+  categoryId: string;
+  categoryName: string;
+  categoryColor: string;
+  categoryIcon: string;
+  monthlyLimitCents: number;
+  spentCents: number;
 }
 
 export interface ChatMetric {
@@ -90,9 +65,10 @@ export interface ChatMetric {
 }
 
 export interface ChatHighlight {
+  id?: string;
   merchant: string;
   meta: string;
-  amount: number;
+  amountCents: number;
 }
 
 export interface ChatMessage {
@@ -103,12 +79,4 @@ export interface ChatMessage {
   metrics?: ChatMetric[];
   highlights?: ChatHighlight[];
   tip?: string;
-  showMiniChart?: boolean;
-}
-
-export interface CustomCategory {
-  id: string;
-  name: string;
-  color: string;
-  iconKey: string;
 }

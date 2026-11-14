@@ -12,12 +12,13 @@ import {
   Search,
   Calendar,
 } from 'lucide-react';
-import { ActiveView } from '../types/finance';
+import { ActiveView, Profile } from '../types/finance';
 import { TrocadoLogo, SafeImage } from './TrocadoLogo';
-import { STITCH_IMAGES } from '../data/mockFinanceData';
+import { getCurrentMonthSaoPaulo } from '../utils/formatters';
 
 interface SidebarLayoutProps {
   activeView: ActiveView;
+  profile: Profile | null;
   onNavigate: (view: ActiveView) => void;
   onOpenNewExpense: () => void;
   isDark: boolean;
@@ -45,11 +46,12 @@ const VIEW_TITLES: Record<ActiveView, string> = {
   assistant: 'Assistente IA',
   reports: 'Relatórios & Tendências',
   budgets: 'Orçamentos & Metas',
-  settings: 'Configurações & Open Finance',
+  settings: 'Configurações',
 };
 
 export function SidebarLayout({
   activeView,
+  profile,
   onNavigate,
   onOpenNewExpense,
   isDark,
@@ -57,6 +59,10 @@ export function SidebarLayout({
   onQuickSearch,
   children,
 }: SidebarLayoutProps) {
+  const currentMonth = getCurrentMonthSaoPaulo();
+  const displayName = profile?.displayName || 'Minha Conta';
+  const email = profile?.email || 'Não autenticado';
+
   return (
     <div className="min-h-screen flex bg-[#F8FAFC] dark:bg-[#0B0F14] text-slate-900 dark:text-[#E0E2EA] transition-colors duration-200">
       {/* Desktop Sidebar */}
@@ -99,17 +105,17 @@ export function SidebarLayout({
             className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-[#181C21] transition-colors text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
           >
             <SafeImage
-              src={STITCH_IMAGES.userAvatar}
-              alt="Lucas Silva"
+              src={null}
+              alt={displayName}
               className="w-9 h-9 rounded-full object-cover shrink-0 border border-slate-200 dark:border-[#222C38]"
               fallbackType="avatar"
             />
             <div className="min-w-0 flex-1">
               <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
-                Lucas Silva
+                {displayName}
               </p>
               <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                Plano Pro · Open Finance
+                {email}
               </p>
             </div>
           </button>
@@ -118,7 +124,6 @@ export function SidebarLayout({
 
       {/* Main Content Area */}
       <div className="flex-1 lg:pl-64 flex flex-col min-w-0">
-        {/* Top Bar */}
         <header className="sticky top-0 z-20 h-16 bg-white/90 dark:bg-[#0B0F14]/90 backdrop-blur-md border-b border-slate-200 dark:border-[#222C38] px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 min-w-0">
             <div className="lg:hidden flex items-center gap-2 shrink-0">
@@ -132,7 +137,7 @@ export function SidebarLayout({
               <span aria-hidden="true">·</span>
               <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
                 <Calendar className="w-3.5 h-3.5 text-emerald-500" />
-                Outubro 2024
+                {currentMonth.label}
               </span>
             </div>
           </div>
@@ -170,13 +175,12 @@ export function SidebarLayout({
           </div>
         </header>
 
-        {/* Page Body */}
         <main className="flex-1 px-4 sm:px-6 lg:px-8 py-6 pb-24 lg:pb-10 max-w-7xl w-full mx-auto">
           {children}
         </main>
       </div>
 
-      {/* Mobile Bottom Navigation (compact <= 15% viewport height) */}
+      {/* Mobile Bottom Navigation */}
       <nav
         className="lg:hidden fixed bottom-0 inset-x-0 z-30 h-16 bg-white/95 dark:bg-[#101419]/95 backdrop-blur-md border-t border-slate-200 dark:border-[#222C38] flex items-center justify-around px-2"
         aria-label="Menu inferior"

@@ -1,20 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { CheckCircle2, Undo2, X } from 'lucide-react';
-import {
-  ActiveView,
-  BankConnection,
-  CategoryBudget,
-  CustomCategory,
-  Expense,
-  SavingsGoal,
-} from './types/finance';
-import {
-  INITIAL_BUDGETS,
-  INITIAL_CONNECTIONS,
-  INITIAL_CUSTOM_CATEGORIES,
-  INITIAL_EXPENSES,
-  INITIAL_GOALS,
-} from './data/mockFinanceData';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { CheckCircle2, X } from 'lucide-react';
+import { ActiveView, Budget, Category, Expense, Profile } from './types/finance';
 import { SidebarLayout } from './components/SidebarLayout';
 import { DashboardView } from './components/DashboardView';
 import { ExpensesView } from './components/ExpensesView';
@@ -24,29 +12,66 @@ import { ReportsView } from './components/ReportsView';
 import { SettingsView } from './components/SettingsView';
 import { NewExpenseModal } from './components/NewExpenseModal';
 import { ExpenseDetailModal } from './components/ExpenseDetailModal';
+import { apiFetch } from './lib/api';
 
-interface ToastState {
-  message: string;
-  undoExpenseId?: string;
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: 1,
+      refetchOnWindowFocus: false,
+    },
+  },
+});
+
+const VIEW_PATHS: Record<ActiveView, string> = {
+  dashboard: '/',
+  expenses: '/despesas',
+  assistant: '/assistente',
+  reports: '/relatorios',
+  budgets: '/orcamentos',
+  settings: '/configuracoes',
+};
+
+function pathToView(pathname: string): ActiveView {
+  switch (pathname) {
+    case '/despesas':
+      return 'expenses';
+    case '/assistente':
+      return 'assistant';
+    case '/relatorios':
+      return 'reports';
+    case '/orcamentos':
+      return 'budgets';
+    case '/configuracoes':
+      return 'settings';
+    default:
+      return 'dashboard';
+  }
 }
 
-export default function App() {
-  const [activeView, setActiveView] = useState<ActiveView>('dashboard');
+function TrocadoAppShell() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const activeView = pathToView(location.pathname);
+
   const [isDark, setIsDark] = useState<boolean>(true);
-  const [expenses, setExpenses] = useState<Expense[]>(INITIAL_EXPENSES);
-  const [budgets, setBudgets] = useState<CategoryBudget[]>(INITIAL_BUDGETS);
-  const [goals, setGoals] = useState<SavingsGoal[]>(INITIAL_GOALS);
-  const [connections, setConnections] = useState<BankConnection[]>(INITIAL_CONNECTIONS);
-  const [customCategories, setCustomCategories] = useState<CustomCategory[]>(
-    INITIAL_CUSTOM_CATEGORIES
-  );
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [budgets, setBudgets] = useState<Budget[]>([]);
 
   const [isNewExpenseOpen, setIsNewExpenseOpen] = useState(false);
-  const [newExpenseMode, setNewExpenseMode] = useState<'scanner' | 'text' | 'manual'>('scanner');
+  const [newExpenseMode, setNewExpenseMode] = useState<'foto' | 'texto' | 'manual'>('foto');
   const [selectedExpense, setSelectedExpense] = useState<Expense | null>(null);
-  const [toast, setToast] = useState<ToastState | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
 
-  // Sync dark class on <html>
+  // Check Worker API health cleanly via TanStack Query
+  useQuery({
+    queryKey: ['health'],
+    queryFn: () => apiFetch<{ ok: boolean }>('/api/health', { skipAuth: true }),
+    retry: false,
+  });
+
   useEffect(() => {
     const root = document.documentElement;
     if (isDark) {
@@ -56,232 +81,203 @@ export default function App() {
     }
   }, [isDark]);
 
-  // Keyboard shortcut Cmd/Ctrl+K jumps to Expenses search
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        setActiveView('expenses');
+        navigate(VIEW_PATHS.expenses);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
-
-  const showToast = (message: string, undoExpenseId?: string) => {
-    setToast({ message, undoExpenseId });
-  };
+  }, [navigate]);
 
   useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(() => setToast(null), 5000);
+    const t = setTimeout(() => setToast(null), 4000);
     return () => clearTimeout(t);
   }, [toast]);
 
-  const categoryNames = customCategories.map((c) => c.name);
-
-  const handleSaveNewExpense = (expense: Expense) => {
-    setExpenses((prev) => [expense, ...prev]);
-    setIsNewExpenseOpen(false);
-    showToast('Despesa salva!', expense.id);
+  const handleNavigate = (view: ActiveView) => {
+    navigate(VIEW_PATHS[view]);
   };
 
-  const handleUndoExpense = (id: string) => {
-    setExpenses((prev) => prev.filter((e) => e.id !== id));
-    setToast(null);
+  const openNewExpense = (mode: 'foto' | 'texto' | 'manual' = 'foto') => {
+    setNewExpenseMode(mode);
+    setIsNewExpenseOpen(true);
+  };
+
+  const handleSaveNewExpense = (draft: Omit<Expense, 'id' | 'createdAt' | 'updatedAt'>) => {
+    const now = new Date().toISOString();
+    const created: Expense = {
+      ...draft,
+      id: crypto.randomUUID(),
+      createdAt: now,
+      updatedAt: now,
+    };
+    setExpenses((prev) => [created, ...prev]);
+    setIsNewExpenseOpen(false);
+    setToast('Despesa salva!');
   };
 
   const handleUpdateExpense = (updated: Expense) => {
     setExpenses((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
     setSelectedExpense(updated);
-    showToast('Despesa atualizada!');
+    setToast('Despesa atualizada!');
   };
 
   const handleDeleteExpense = (id: string) => {
     setExpenses((prev) => prev.filter((e) => e.id !== id));
-    showToast('Despesa removida.');
+    setToast('Despesa removida.');
   };
 
-  const handleUpdateBudgetLimit = (id: string, newLimit: number) => {
-    setBudgets((prev) =>
-      prev.map((b) => (b.id === id ? { ...b, limit: newLimit } : b))
-    );
-  };
-
-  const handleApplyAiRebalance = () => {
-    setBudgets((prev) =>
-      prev.map((b) => {
-        if (b.category === 'Alimentação') return { ...b, limit: 1600 };
-        if (b.category === 'Transporte') return { ...b, limit: 600 };
-        return b;
-      })
-    );
-    showToast('Reequilíbrio sugerido pela IA aplicado aos orçamentos!');
-  };
-
-  const handleContributeGoal = (goalId: string, amount: number) => {
-    setGoals((prev) =>
-      prev.map((g) =>
-        g.id === goalId ? { ...g, current: Math.min(g.target, g.current + amount) } : g
-      )
-    );
-    showToast(`Aporte de R$ ${amount.toFixed(2).replace('.', ',')} registrado!`);
-  };
-
-  const handleAddBudgetCategory = (category: string, limit: number) => {
-    setBudgets((prev) => [
-      ...prev,
-      {
-        id: `bud-${Date.now()}`,
-        category,
-        description: 'Categoria personalizada',
-        limit,
-        color: '#06B6D4',
-        iconKey: 'layers',
-      },
-    ]);
-    if (!categoryNames.includes(category)) {
-      setCustomCategories((prev) => [
+  const handleUpdateBudgetLimit = (categoryId: string, newLimitCents: number) => {
+    setBudgets((prev) => {
+      const exists = prev.some((b) => b.categoryId === categoryId);
+      if (exists) {
+        return prev.map((b) =>
+          b.categoryId === categoryId ? { ...b, monthlyLimitCents: newLimitCents } : b
+        );
+      }
+      const cat = categories.find((c) => c.id === categoryId);
+      if (!cat) return prev;
+      return [
         ...prev,
-        { id: `cat-${Date.now()}`, name: category, color: '#06B6D4', iconKey: 'layers' },
-      ]);
-    }
-    showToast(`Orçamento para ${category} criado!`);
+        {
+          categoryId,
+          categoryName: cat.name,
+          categoryColor: cat.color,
+          categoryIcon: cat.icon,
+          monthlyLimitCents: newLimitCents,
+          spentCents: 0,
+        },
+      ];
+    });
   };
 
-  const handleToggleAutoSync = (id: string) => {
-    setConnections((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, autoSync: !c.autoSync } : c))
+  const handleAddCategory = (name: string, color: string) => {
+    const created: Category = {
+      id: crypto.randomUUID(),
+      name,
+      color,
+      icon: 'tag',
+      isDefault: false,
+      createdAt: new Date().toISOString(),
+    };
+    setCategories((prev) => [...prev, created]);
+    setToast(`Categoria "${name}" criada!`);
+  };
+
+  const handleDeleteCategory = (id: string) => {
+    setCategories((prev) => prev.filter((c) => c.id !== id));
+    setToast('Categoria removida.');
+  };
+
+  const handleUpdateDisplayName = (displayName: string) => {
+    setProfile((prev) =>
+      prev
+        ? { ...prev, displayName }
+        : {
+            userId: '',
+            email: '',
+            displayName,
+            theme: isDark ? 'dark' : 'light',
+            createdAt: new Date().toISOString(),
+          }
     );
-  };
-
-  const handleRevalidateBank = (id: string) => {
-    setConnections((prev) =>
-      prev.map((c) =>
-        c.id === id
-          ? {
-              ...c,
-              status: 'connected',
-              lastSyncLabel: 'Sincronizado agora',
-              autoSync: true,
-              consentUntil: '14 Nov 2025',
-            }
-          : c
-      )
-    );
-    showToast('Conexão Open Finance revalidada com sucesso!');
-  };
-
-  const handleSyncAllBanks = () => {
-    setConnections((prev) =>
-      prev.map((c) =>
-        c.status === 'connected' ? { ...c, lastSyncLabel: 'Agora mesmo' } : c
-      )
-    );
-    showToast('Todas as contas conectadas foram sincronizadas!');
-  };
-
-  const handleAddCustomCategory = (name: string, color: string) => {
-    setCustomCategories((prev) => [
-      ...prev,
-      { id: `cat-${Date.now()}`, name, color, iconKey: 'layers' },
-    ]);
-    showToast(`Categoria "${name}" adicionada!`);
-  };
-
-  const handleDeleteCustomCategory = (id: string) => {
-    setCustomCategories((prev) => prev.filter((c) => c.id !== id));
-    showToast('Categoria removida.');
-  };
-
-  const openNewExpense = (mode: 'scanner' | 'text' | 'manual' = 'scanner') => {
-    setNewExpenseMode(mode);
-    setIsNewExpenseOpen(true);
+    setToast('Perfil atualizado!');
   };
 
   return (
     <>
       <SidebarLayout
         activeView={activeView}
-        onNavigate={setActiveView}
-        onOpenNewExpense={() => openNewExpense('scanner')}
+        profile={profile}
+        onNavigate={handleNavigate}
+        onOpenNewExpense={() => openNewExpense('foto')}
         isDark={isDark}
         onToggleTheme={() => setIsDark((d) => !d)}
-        onQuickSearch={() => setActiveView('expenses')}
+        onQuickSearch={() => handleNavigate('expenses')}
       >
-        {activeView === 'dashboard' && (
-          <DashboardView
-            expenses={expenses}
-            budgets={budgets}
-            onNavigate={setActiveView}
-            onOpenNewExpense={openNewExpense}
-            onSelectExpense={setSelectedExpense}
-            onApplyAiRebalance={handleApplyAiRebalance}
+        <Routes>
+          <Route
+            path="/"
+            element={
+              <DashboardView
+                profile={profile}
+                expenses={expenses}
+                budgets={budgets}
+                categories={categories}
+                onNavigate={handleNavigate}
+                onOpenNewExpense={openNewExpense}
+                onSelectExpense={setSelectedExpense}
+              />
+            }
           />
-        )}
-
-        {activeView === 'expenses' && (
-          <ExpensesView
-            expenses={expenses}
-            categories={categoryNames}
-            onSelectExpense={setSelectedExpense}
-            onOpenNewExpense={() => openNewExpense('scanner')}
+          <Route
+            path="/despesas"
+            element={
+              <ExpensesView
+                expenses={expenses}
+                categories={categories}
+                onSelectExpense={setSelectedExpense}
+                onOpenNewExpense={() => openNewExpense('foto')}
+              />
+            }
           />
-        )}
-
-        {activeView === 'assistant' && (
-          <AssistantView expenses={expenses} budgets={budgets} />
-        )}
-
-        {activeView === 'budgets' && (
-          <BudgetsView
-            expenses={expenses}
-            budgets={budgets}
-            goals={goals}
-            onUpdateBudgetLimit={handleUpdateBudgetLimit}
-            onApplyAiRebalance={handleApplyAiRebalance}
-            onContributeGoal={handleContributeGoal}
-            onAddBudgetCategory={handleAddBudgetCategory}
+          <Route
+            path="/assistente"
+            element={<AssistantView expenses={expenses} />}
           />
-        )}
-
-        {activeView === 'reports' && <ReportsView expenses={expenses} />}
-
-        {activeView === 'settings' && (
-          <SettingsView
-            connections={connections}
-            customCategories={customCategories}
-            expenses={expenses}
-            isDark={isDark}
-            onSetTheme={(mode) => setIsDark(mode === 'dark')}
-            onToggleAutoSync={handleToggleAutoSync}
-            onRevalidateBank={handleRevalidateBank}
-            onSyncAll={handleSyncAllBanks}
-            onAddCategory={handleAddCustomCategory}
-            onDeleteCategory={handleDeleteCustomCategory}
-            onNotify={(msg) => showToast(msg)}
+          <Route
+            path="/orcamentos"
+            element={
+              <BudgetsView
+                budgets={budgets}
+                categories={categories}
+                onUpdateBudgetLimit={handleUpdateBudgetLimit}
+              />
+            }
           />
-        )}
+          <Route
+            path="/relatorios"
+            element={<ReportsView expenses={expenses} categories={categories} />}
+          />
+          <Route
+            path="/configuracoes"
+            element={
+              <SettingsView
+                profile={profile}
+                categories={categories}
+                expenses={expenses}
+                isDark={isDark}
+                onSetTheme={(mode) => setIsDark(mode === 'dark')}
+                onUpdateDisplayName={handleUpdateDisplayName}
+                onAddCategory={handleAddCategory}
+                onDeleteCategory={handleDeleteCategory}
+              />
+            }
+          />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
       </SidebarLayout>
 
-      {/* Modals */}
       <NewExpenseModal
         isOpen={isNewExpenseOpen}
         initialMode={newExpenseMode}
-        categories={categoryNames}
+        categories={categories}
         onClose={() => setIsNewExpenseOpen(false)}
         onSaveExpense={handleSaveNewExpense}
       />
 
       <ExpenseDetailModal
         expense={selectedExpense}
-        categories={categoryNames}
+        categories={categories}
         onClose={() => setSelectedExpense(null)}
         onUpdate={handleUpdateExpense}
         onDelete={handleDeleteExpense}
       />
 
-      {/* Toast Notification */}
       {toast && (
         <div
           role="status"
@@ -289,17 +285,7 @@ export default function App() {
           className="fixed bottom-20 lg:bottom-6 right-4 sm:right-6 z-50 flex items-center gap-3 px-4 py-3 rounded-xl border border-emerald-500/40 bg-white dark:bg-[#151B23] shadow-xl text-sm"
         >
           <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
-          <span className="font-medium text-slate-900 dark:text-white">{toast.message}</span>
-          {toast.undoExpenseId && (
-            <button
-              type="button"
-              onClick={() => handleUndoExpense(toast.undoExpenseId!)}
-              className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 dark:text-[#4EDEA3] hover:underline ml-1"
-            >
-              <Undo2 className="w-3.5 h-3.5" />
-              Desfazer
-            </button>
-          )}
+          <span className="font-medium text-slate-900 dark:text-white">{toast}</span>
           <button
             type="button"
             onClick={() => setToast(null)}
@@ -311,5 +297,15 @@ export default function App() {
         </div>
       )}
     </>
+  );
+}
+
+export default function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <BrowserRouter>
+        <TrocadoAppShell />
+      </BrowserRouter>
+    </QueryClientProvider>
   );
 }
