@@ -1,24 +1,23 @@
 import React, { useRef, useState } from 'react';
-import { Send, Sparkles, RefreshCw, Lightbulb, MessageSquare } from 'lucide-react';
-import { ChatMessage, Expense } from '../types/finance';
-import { formatCentsBRL } from '../utils/formatters';
-import { apiFetch } from '../lib/api';
-
-interface AssistantViewProps {
-  expenses: Expense[];
-}
+import { Send, Sparkles, RefreshCw, MessageSquare } from 'lucide-react';
+import { ChatMessage } from '../types/finance';
+import { apiFetchStream } from '../lib/api';
 
 const SUGGESTION_CHIPS = [
-  'Quanto gastei com transporte neste mês?',
-  'Qual minha maior despesa do mês?',
-  'Onde posso economizar?',
+  'Quanto gastei neste mês por categoria?',
+  'Qual foi minha maior despesa recente?',
+  'Onde estou gastando mais nos últimos meses?',
 ];
 
-export function AssistantView({ expenses }: AssistantViewProps) {
+export function AssistantView() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isSending, setIsSending] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const scrollToBottom = () => {
+    setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 30);
+  };
 
   const sendMessage = async (textToSend: string) => {
     const trimmed = textToSend.trim();
@@ -37,52 +36,108 @@ export function AssistantView({ expenses }: AssistantViewProps) {
       text: trimmed,
     };
 
-    setMessages((prev) => [...prev, userMsg]);
+    const assistantId = `ai-${Date.now() + 1}`;
+    const assistantPlaceholder: ChatMessage = {
+      id: assistantId,
+      role: 'assistant',
+      timestamp: nowLabel,
+      text: '',
+    };
+
+    const historyForApi = [...messages, userMsg]
+      .filter((m) => m.text.trim().length > 0)
+      .slice(-10)
+      .map((m) => ({
+        role: m.role,
+        content: m.text,
+      }));
+
+    setMessages((prev) => [...prev, userMsg, assistantPlaceholder]);
     setInput('');
     setIsSending(true);
+    scrollToBottom();
 
     try {
-      const data = await apiFetch<{
-        reply: string;
-        metrics?: ChatMessage['metrics'];
-        highlights?: ChatMessage['highlights'];
-        tip?: string;
-      }>('/api/ai/chat', {
+      const response = await apiFetchStream('/api/assistant', {
         method: 'POST',
-        body: JSON.stringify({ message: trimmed }),
+        body: JSON.stringify({ messages: historyForApi }),
       });
 
-      const assistantMsg: ChatMessage = {
-        id: `ai-${Date.now()}`,
-        role: 'assistant',
-        timestamp: new Date().toLocaleTimeString('pt-BR', {
-          hour: '2-digit',
-          minute: '2-digit',
-          timeZone: 'America/Sao_Paulo',
-        }),
-        text: data.reply,
-        metrics: data.metrics,
-        highlights: data.highlights,
-        tip: data.tip,
-      };
-      setMessages((prev) => [...prev, assistantMsg]);
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('Não foi possível iniciar a leitura da resposta.');
+      }
+
+      const decoder = new TextDecoder();
+      let sseBuffer = '';
+      let accumulatedText = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        sseBuffer += decoder.decode(value, { stream: true });
+        const events = sseBuffer.split(/\r?\n\r?\n/);
+        sseBuffer = events.pop() ?? '';
+
+        for (const eventChunk of events) {
+          const lines = eventChunk.split(/\r?\n/);
+          for (const line of lines) {
+            if (!line.startsWith('data:')) continue;
+            const payloadStr = line.slice(5).trim();
+            if (!payloadStr || payloadStr === '[DONE]') continue;
+
+            try {
+              const parsed = JSON.parse(payloadStr) as {
+                response?: string;
+                choices?: Array<{ delta?: { content?: string } }>;
+              };
+              const tokenText =
+                typeof parsed.response === 'string'
+                  ? parsed.response
+                  : typeof parsed.choices?.[0]?.delta?.content === 'string'
+                    ? parsed.choices[0].delta.content
+                    : '';
+
+              if (tokenText) {
+                accumulatedText += tokenText;
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantId ? { ...m, text: accumulatedText } : m
+                  )
+                );
+                scrollToBottom();
+              }
+            } catch {
+              // Ignore non-JSON heartbeat lines
+            }
+          }
+        }
+      }
+
+      if (!accumulatedText.trim()) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? {
+                  ...m,
+                  text: 'Não encontrei informações suficientes nos seus registros para responder.',
+                }
+              : m
+          )
+        );
+      }
     } catch (err) {
       const errMsg =
         err instanceof Error
           ? err.message
           : 'Não foi possível consultar o assistente agora.';
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `err-${Date.now()}`,
-          role: 'assistant',
-          timestamp: nowLabel,
-          text: errMsg,
-        },
-      ]);
+      setMessages((prev) =>
+        prev.map((m) => (m.id === assistantId ? { ...m, text: errMsg } : m))
+      );
     } finally {
       setIsSending(false);
-      setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 60);
+      scrollToBottom();
     }
   };
 
@@ -97,17 +152,16 @@ export function AssistantView({ expenses }: AssistantViewProps) {
             </h1>
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            {expenses.length > 0
-              ? `Conectado a ${expenses.length} despesas registradas na sua conta`
-              : 'Pergunte sobre seus gastos, categorias e metas financeiras'}
+            Respostas baseadas nos seus últimos 6 meses de gastos, top estabelecimentos e orçamentos.
           </p>
         </div>
 
         {messages.length > 0 && (
           <button
             type="button"
+            disabled={isSending}
             onClick={() => setMessages([])}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-[#1C2025] self-start sm:self-auto"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-[#1C2025] disabled:opacity-50 self-start sm:self-auto"
           >
             <RefreshCw className="w-3.5 h-3.5" />
             Limpar Conversa
@@ -126,102 +180,58 @@ export function AssistantView({ expenses }: AssistantViewProps) {
               Comece uma conversa com o Trocado
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-              Use uma das sugestões abaixo ou faça sua própria pergunta sobre seus lançamentos e orçamentos.
+              Pergunte sobre gastos por mês, categorias, estabelecimentos ou limites de orçamento.
             </p>
           </div>
         ) : (
-          messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-            >
-              {msg.role === 'assistant' && (
-                <div className="w-8 h-8 rounded-full bg-violet-500/15 text-violet-500 flex items-center justify-center shrink-0 mt-1">
-                  <Sparkles className="w-4 h-4" />
-                </div>
-              )}
-
+          messages.map((msg, idx) => {
+            const isStreamingThis = isSending && idx === messages.length - 1 && msg.role === 'assistant';
+            return (
               <div
-                className={`max-w-2xl space-y-2 ${
-                  msg.role === 'user' ? 'items-end flex flex-col' : ''
-                }`}
+                key={msg.id}
+                className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
               >
-                <div className="flex items-center gap-2 text-[11px] text-slate-400 dark:text-slate-500">
-                  <span>{msg.role === 'user' ? 'Você' : 'Trocado IA'}</span>
-                  <span aria-hidden="true">·</span>
-                  <span className="font-mono-tabular">{msg.timestamp}</span>
-                </div>
+                {msg.role === 'assistant' && (
+                  <div className="w-8 h-8 rounded-full bg-violet-500/15 text-violet-500 flex items-center justify-center shrink-0 mt-1">
+                    <Sparkles className="w-4 h-4" />
+                  </div>
+                )}
 
                 <div
-                  className={`px-4 py-3 text-sm leading-relaxed ${
-                    msg.role === 'user'
-                      ? 'rounded-2xl rounded-br-xs bg-slate-100 dark:bg-[#1E293B] text-slate-900 dark:text-white'
-                      : 'rounded-2xl rounded-bl-xs border border-violet-200 dark:border-violet-500/30 bg-slate-50/60 dark:bg-[#101419] text-slate-800 dark:text-slate-100'
+                  className={`max-w-2xl space-y-2 ${
+                    msg.role === 'user' ? 'items-end flex flex-col' : ''
                   }`}
                 >
-                  <p>{msg.text}</p>
+                  <div className="flex items-center gap-2 text-[11px] text-slate-400 dark:text-slate-500">
+                    <span>{msg.role === 'user' ? 'Você' : 'Trocado IA'}</span>
+                    <span aria-hidden="true">·</span>
+                    <span className="font-mono-tabular">{msg.timestamp}</span>
+                  </div>
 
-                  {msg.metrics && msg.metrics.length > 0 && (
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 mt-4">
-                      {msg.metrics.map((m, i) => (
-                        <div
-                          key={i}
-                          className="p-3 rounded-xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23]"
-                        >
-                          <p className="text-[11px] text-slate-500 dark:text-slate-400">{m.label}</p>
-                          <p className="text-sm font-bold text-slate-900 dark:text-white font-mono-tabular mt-0.5">
-                            {m.value}
-                          </p>
-                          {m.hint && (
-                            <p className="text-[11px] text-emerald-600 dark:text-[#4EDEA3] mt-0.5">
-                              {m.hint}
-                            </p>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {msg.highlights && msg.highlights.length > 0 && (
-                    <div className="mt-4 space-y-2">
-                      {msg.highlights.map((h, i) => (
-                        <div
-                          key={i}
-                          className="px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] flex items-center justify-between gap-3 text-xs"
-                        >
-                          <div className="min-w-0">
-                            <p className="font-semibold text-slate-900 dark:text-white truncate">
-                              {h.merchant}
-                            </p>
-                            <p className="text-slate-500 dark:text-slate-400 truncate">{h.meta}</p>
-                          </div>
-                          <span className="font-mono-tabular font-bold text-slate-900 dark:text-white shrink-0">
-                            -{formatCentsBRL(h.amountCents)}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {msg.tip && (
-                    <div className="mt-4 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/25 flex items-start gap-2.5 text-xs text-slate-700 dark:text-slate-200">
-                      <Lightbulb className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
-                      <span>{msg.tip}</span>
-                    </div>
-                  )}
+                  <div
+                    className={`px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
+                      msg.role === 'user'
+                        ? 'rounded-2xl rounded-br-xs bg-slate-100 dark:bg-[#1E293B] text-slate-900 dark:text-white'
+                        : 'rounded-2xl rounded-bl-xs border border-violet-200 dark:border-violet-500/30 bg-slate-50/60 dark:bg-[#101419] text-slate-800 dark:text-slate-100'
+                    }`}
+                  >
+                    {msg.text ? (
+                      <>
+                        <span>{msg.text}</span>
+                        {isStreamingThis && (
+                          <span className="inline-block w-1.5 h-4 ml-1 align-middle bg-violet-500 animate-pulse" />
+                        )}
+                      </>
+                    ) : (
+                      <span className="text-xs text-slate-500 dark:text-slate-400">
+                        Analisando seus lançamentos...
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))
-        )}
-
-        {isSending && (
-          <div className="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
-            <div className="w-8 h-8 rounded-full bg-violet-500/15 text-violet-500 flex items-center justify-center">
-              <Sparkles className="w-4 h-4" />
-            </div>
-            <span>Analisando seus lançamentos...</span>
-          </div>
+            );
+          })
         )}
         <div ref={bottomRef} />
       </div>
@@ -233,8 +243,9 @@ export function AssistantView({ expenses }: AssistantViewProps) {
             <button
               key={chip}
               type="button"
+              disabled={isSending}
               onClick={() => sendMessage(chip)}
-              className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] hover:border-violet-400 text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors whitespace-nowrap shrink-0"
+              className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] hover:border-violet-400 disabled:opacity-50 text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors whitespace-nowrap shrink-0"
             >
               {chip}
             </button>

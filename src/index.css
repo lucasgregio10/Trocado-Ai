@@ -16,6 +16,11 @@
     font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
     font-variant-numeric: tabular-nums;
   }
+
+  :focus-visible {
+    outline: 2px solid #10B981;
+    outline-offset: 2px;
+  }
 }
 
 .tabular-nums {

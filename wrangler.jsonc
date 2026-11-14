@@ -11,14 +11,12 @@
   },
   "observability": { "enabled": true },
   "ai": { "binding": "AI" },
-  "d1_databases": [
-    { "binding": "DB", "database_name": "trocado-db", "database_id": "SEU_DATABASE_ID" }
-  ],
   "r2_buckets": [
     { "binding": "RECEIPTS", "bucket_name": "trocado-receipts" }
   ],
   "vars": {
-    "SUPABASE_URL": "SUA_SUPABASE_URL",
+    "SUPABASE_URL": "https://cgltkzbdnnzljfldvqwi.supabase.co",
+    "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_hr9iItq-rcj3k2TeDJKChg_p8C65P2H",
     "AI_GATEWAY_ID": "trocado",
     "RECEIPTS_ENABLED": "true",
     "AI_DAILY_LIMIT_PER_USER": "60"

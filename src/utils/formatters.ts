@@ -11,6 +11,24 @@ export function formatCentsBRL(amountCents: number): string {
   }).format(amountCents / 100);
 }
 
+export function formatCentsInputMask(cents: number): string {
+  if (!cents || cents <= 0) return '';
+  return new Intl.NumberFormat('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(cents / 100);
+}
+
+export function parseDigitsToCents(raw: string): number {
+  const digits = raw.replace(/\D/g, '');
+  if (!digits) return 0;
+  const parsed = Number.parseInt(digits, 10);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.min(parsed, 100_000_000);
+}
+
 export function getTodaySaoPauloISO(): string {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: SAO_PAULO_TZ,
@@ -18,6 +36,40 @@ export function getTodaySaoPauloISO(): string {
     month: '2-digit',
     day: '2-digit',
   }).format(new Date());
+}
+
+export function addDaysToISO(isoDate: string, deltaDays: number): string {
+  const [y, m, d] = isoDate.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + deltaDays));
+  return dt.toISOString().slice(0, 10);
+}
+
+export function getMaxExpenseDateISO(): string {
+  return addDaysToISO(getTodaySaoPauloISO(), 1);
+}
+
+export function getCurrentMonthISO(): string {
+  return getTodaySaoPauloISO().slice(0, 7);
+}
+
+export function shiftMonthISO(monthIso: string, deltaMonths: number): string {
+  const [y, m] = monthIso.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1 + deltaMonths, 1));
+  const year = dt.getUTCFullYear();
+  const month = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+}
+
+export function formatMonthLabel(monthIso: string): string {
+  const [y, m] = monthIso.split('-').map(Number);
+  if (!y || !m) return monthIso;
+  const dt = new Date(Date.UTC(y, m - 1, 15));
+  const label = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'UTC',
+    month: 'long',
+    year: 'numeric',
+  }).format(dt);
+  return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
 export function getCurrentMonthSaoPaulo(): { year: number; month: number; label: string } {
@@ -37,6 +89,19 @@ export function getCurrentMonthSaoPaulo(): { year: number; month: number; label:
   };
 }
 
+export function getSaoPauloGreeting(): string {
+  const hourStr = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: SAO_PAULO_TZ,
+    hour: '2-digit',
+    hour12: false,
+  }).format(new Date());
+  const hour = Number(hourStr);
+
+  if (hour >= 5 && hour < 12) return 'Bom dia';
+  if (hour >= 12 && hour < 18) return 'Boa tarde';
+  return 'Boa noite';
+}
+
 export function formatDateBR(isoDate: string): string {
   const parts = isoDate.split('-');
   if (parts.length !== 3) return isoDate;
@@ -50,9 +115,7 @@ export function formatDateHeader(isoDate: string): string {
     return `Hoje · ${formatDateBR(isoDate)}`;
   }
 
-  const [ty, tm, td] = today.split('-').map(Number);
-  const yesterdayUtc = new Date(Date.UTC(ty, tm - 1, td - 1));
-  const yesterdayISO = yesterdayUtc.toISOString().slice(0, 10);
+  const yesterdayISO = addDaysToISO(today, -1);
   if (isoDate === yesterdayISO) {
     return `Ontem · ${formatDateBR(isoDate)}`;
   }

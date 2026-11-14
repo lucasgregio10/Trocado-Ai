@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Wallet } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, CheckCircle2, Loader2, Save, Trash2, Wallet } from 'lucide-react';
 import { Budget, Category } from '../types/finance';
 import { formatCentsBRL, getCurrentMonthSaoPaulo } from '../utils/formatters';
 import { CategoryIcon } from './CategoryIcon';
@@ -8,49 +8,108 @@ interface BudgetsViewProps {
   budgets: Budget[];
   categories: Category[];
   isLoading?: boolean;
-  onUpdateBudgetLimit: (categoryId: string, newLimitCents: number) => void;
+  isSavingCategoryId?: string | null;
+  onSaveBudgetLimit: (categoryId: string, newLimitCents: number) => Promise<void>;
+  onDeleteBudgetLimit: (categoryId: string) => Promise<void>;
+}
+
+function getBudgetStatusColors(pct: number, hasLimit: boolean) {
+  if (!hasLimit) {
+    return {
+      bar: '#64748B',
+      text: 'text-slate-500 dark:text-slate-400',
+      isWarningOrOver: false,
+    };
+  }
+  if (pct > 100) {
+    return {
+      bar: '#EF4444',
+      text: 'text-red-500',
+      isWarningOrOver: true,
+    };
+  }
+  if (pct >= 80) {
+    return {
+      bar: '#F59E0B',
+      text: 'text-amber-600 dark:text-amber-400',
+      isWarningOrOver: true,
+    };
+  }
+  return {
+    bar: '#10B981',
+    text: 'text-emerald-600 dark:text-[#4EDEA3]',
+    isWarningOrOver: false,
+  };
 }
 
 export function BudgetsView({
   budgets,
   categories,
   isLoading = false,
-  onUpdateBudgetLimit,
+  isSavingCategoryId = null,
+  onSaveBudgetLimit,
+  onDeleteBudgetLimit,
 }: BudgetsViewProps) {
   const [filter, setFilter] = useState<'all' | 'alert' | 'healthy'>('all');
+  const [draftLimitsReais, setDraftLimitsReais] = useState<Record<string, number>>({});
   const currentMonth = getCurrentMonthSaoPaulo();
 
   const mergedBudgets = useMemo(() => {
     const budgetMap = new Map(budgets.map((b) => [b.categoryId, b]));
     return categories.map((cat) => {
       const existing = budgetMap.get(cat.id);
-      const monthlyLimitCents = existing?.monthlyLimitCents ?? 0;
+      const savedLimitCents = existing?.monthlyLimitCents ?? 0;
       const spentCents = existing?.spentCents ?? 0;
-      const pct = monthlyLimitCents > 0 ? (spentCents / monthlyLimitCents) * 100 : 0;
-      const isAlert = monthlyLimitCents > 0 && pct >= 90;
+      const draftReais = draftLimitsReais[cat.id];
+      const effectiveLimitCents =
+        draftReais !== undefined ? Math.round(draftReais * 100) : savedLimitCents;
+      const pct = savedLimitCents > 0 ? (spentCents / savedLimitCents) * 100 : 0;
+      const isAlert = savedLimitCents > 0 && pct >= 80;
+      const isDirty = draftReais !== undefined && effectiveLimitCents !== savedLimitCents;
+
       return {
         categoryId: cat.id,
         categoryName: cat.name,
         categoryColor: cat.color,
         categoryIcon: cat.icon,
-        monthlyLimitCents,
+        savedLimitCents,
+        effectiveLimitCents,
         spentCents,
         pct,
         isAlert,
+        isDirty,
       };
     });
-  }, [budgets, categories]);
+  }, [budgets, categories, draftLimitsReais]);
+
+  useEffect(() => {
+    setDraftLimitsReais((prev) => {
+      const next: Record<string, number> = {};
+      let changed = false;
+      for (const [catId, val] of Object.entries(prev)) {
+        const b = budgets.find((item) => item.categoryId === catId);
+        const savedCents = b?.monthlyLimitCents ?? 0;
+        if (Math.round(val * 100) !== savedCents) {
+          next[catId] = val;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [budgets]);
 
   const totalSpentCents = useMemo(
     () => mergedBudgets.reduce((s, b) => s + b.spentCents, 0),
     [mergedBudgets]
   );
   const totalAllocatedCents = useMemo(
-    () => mergedBudgets.reduce((s, b) => s + b.monthlyLimitCents, 0),
+    () => mergedBudgets.reduce((s, b) => s + b.savedLimitCents, 0),
     [mergedBudgets]
   );
 
   const usedPct = totalAllocatedCents > 0 ? (totalSpentCents / totalAllocatedCents) * 100 : 0;
+  const totalColors = getBudgetStatusColors(usedPct, totalAllocatedCents > 0);
   const remainingTotalCents = Math.max(0, totalAllocatedCents - totalSpentCents);
 
   const alertCount = mergedBudgets.filter((b) => b.isAlert).length;
@@ -98,12 +157,8 @@ export function BudgetsView({
               </span>
             </div>
           </div>
-          <span
-            className={`text-sm font-bold font-mono-tabular ${
-              usedPct > 90 ? 'text-amber-500' : 'text-emerald-500'
-            }`}
-          >
-            {usedPct.toFixed(1)}% usado
+          <span className={`text-sm font-bold font-mono-tabular ${totalColors.text}`}>
+            {totalAllocatedCents > 0 ? `${usedPct.toFixed(1)}% usado` : 'Sem limites'}
           </span>
         </div>
 
@@ -112,7 +167,7 @@ export function BudgetsView({
             className="h-full rounded-full transition-all duration-300"
             style={{
               width: `${Math.min(100, usedPct)}%`,
-              backgroundColor: usedPct > 90 ? '#EF4444' : '#10B981',
+              backgroundColor: totalColors.bar,
             }}
           />
         </div>
@@ -130,7 +185,7 @@ export function BudgetsView({
             Nenhuma categoria disponível para orçamento.
           </p>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            Crie categorias em Configurações ou autentique sua conta para carregar suas categorias padrão.
+            Crie categorias em Configurações para definir limites mensais.
           </p>
         </div>
       ) : (
@@ -163,9 +218,11 @@ export function BudgetsView({
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
             {visibleBudgets.map((b) => {
-              const isDanger = b.monthlyLimitCents > 0 && b.pct > 90;
-              const remainingCents = Math.max(0, b.monthlyLimitCents - b.spentCents);
-              const limitReais = Math.round(b.monthlyLimitCents / 100);
+              const colors = getBudgetStatusColors(b.pct, b.savedLimitCents > 0);
+              const remainingCents = Math.max(0, b.savedLimitCents - b.spentCents);
+              const limitReais = Math.round(b.effectiveLimitCents / 100);
+              const isSavingThis = isSavingCategoryId === b.categoryId;
+
               return (
                 <article
                   key={b.categoryId}
@@ -177,25 +234,25 @@ export function BudgetsView({
                         className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
                         style={{ backgroundColor: `${b.categoryColor}20`, color: b.categoryColor }}
                       >
-                        <CategoryIcon category={b.categoryName} className="w-4 h-4" />
+                        <CategoryIcon category={b.categoryName} icon={b.categoryIcon} className="w-4 h-4" />
                       </div>
                       <div>
                         <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
                           {b.categoryName}
                         </h3>
                         <p className="text-xs text-slate-500 dark:text-slate-400">
-                          {b.monthlyLimitCents > 0 ? 'Limite mensal ativo' : 'Sem limite definido'}
+                          {b.savedLimitCents > 0
+                            ? `Limite salvo: ${formatCentsBRL(b.savedLimitCents)}`
+                            : 'Sem limite definido'}
                         </p>
                       </div>
                     </div>
 
-                    {b.monthlyLimitCents > 0 && (
+                    {b.savedLimitCents > 0 && (
                       <span
-                        className={`inline-flex items-center gap-1 text-xs font-semibold font-mono-tabular ${
-                          isDanger ? 'text-red-500' : 'text-emerald-600 dark:text-[#4EDEA3]'
-                        }`}
+                        className={`inline-flex items-center gap-1 text-xs font-semibold font-mono-tabular ${colors.text}`}
                       >
-                        {isDanger ? (
+                        {colors.isWarningOrOver ? (
                           <AlertTriangle className="w-3.5 h-3.5" />
                         ) : (
                           <CheckCircle2 className="w-3.5 h-3.5" />
@@ -210,7 +267,7 @@ export function BudgetsView({
                       className="h-full rounded-full transition-all duration-300"
                       style={{
                         width: `${Math.min(100, b.pct)}%`,
-                        backgroundColor: isDanger ? '#EF4444' : b.categoryColor,
+                        backgroundColor: colors.bar,
                       }}
                     />
                   </div>
@@ -224,7 +281,7 @@ export function BudgetsView({
                     </span>
                   </div>
 
-                  <div className="pt-3 border-t border-slate-100 dark:border-[#222C38] space-y-2">
+                  <div className="pt-3 border-t border-slate-100 dark:border-[#222C38] space-y-2.5">
                     <div className="flex items-center justify-between text-xs">
                       <label
                         htmlFor={`slider-${b.categoryId}`}
@@ -237,13 +294,16 @@ export function BudgetsView({
                         <input
                           type="number"
                           min={0}
-                          max={50000}
+                          max={1000000}
                           step={50}
                           value={limitReais}
                           onChange={(e) => {
                             const val = Number(e.target.value);
                             if (Number.isFinite(val) && val >= 0) {
-                              onUpdateBudgetLimit(b.categoryId, Math.round(val * 100));
+                              setDraftLimitsReais((prev) => ({
+                                ...prev,
+                                [b.categoryId]: Math.min(1_000_000, val),
+                              }));
                             }
                           }}
                           aria-label={`Valor limite de ${b.categoryName}`}
@@ -251,6 +311,7 @@ export function BudgetsView({
                         />
                       </div>
                     </div>
+
                     <input
                       id={`slider-${b.categoryId}`}
                       type="range"
@@ -258,11 +319,57 @@ export function BudgetsView({
                       max={5000}
                       step={50}
                       value={Math.min(5000, limitReais)}
-                      onChange={(e) =>
-                        onUpdateBudgetLimit(b.categoryId, Number(e.target.value) * 100)
-                      }
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setDraftLimitsReais((prev) => ({
+                          ...prev,
+                          [b.categoryId]: val,
+                        }));
+                      }}
                       className="w-full accent-emerald-500 cursor-pointer"
                     />
+
+                    <div className="flex items-center justify-end gap-2 pt-1">
+                      {b.savedLimitCents > 0 && (
+                        <button
+                          type="button"
+                          disabled={isSavingThis}
+                          onClick={async () => {
+                            await onDeleteBudgetLimit(b.categoryId);
+                            setDraftLimitsReais((prev) => {
+                              const next = { ...prev };
+                              delete next[b.categoryId];
+                              return next;
+                            });
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-red-500/30 text-red-600 dark:text-red-400 hover:bg-red-500/10 disabled:opacity-50 text-xs font-medium transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Remover
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        disabled={
+                          isSavingThis ||
+                          (!b.isDirty && b.effectiveLimitCents === b.savedLimitCents) ||
+                          b.effectiveLimitCents <= 0
+                        }
+                        onClick={async () => {
+                          if (b.effectiveLimitCents > 0) {
+                            await onSaveBudgetLimit(b.categoryId, b.effectiveLimitCents);
+                          }
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-600 disabled:opacity-45 text-[#0B0F14] font-semibold text-xs transition-colors"
+                      >
+                        {isSavingThis ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Save className="w-3.5 h-3.5" />
+                        )}
+                        {isSavingThis ? 'Salvando...' : 'Salvar limite'}
+                      </button>
+                    </div>
                   </div>
                 </article>
               );

@@ -6,23 +6,38 @@ import {
   SlidersHorizontal,
   ReceiptText,
   Plus,
+  ChevronLeft,
+  ChevronRight,
+  TrendingUp,
+  TrendingDown,
+  AlertCircle,
+  RefreshCw,
 } from 'lucide-react';
-import { ActiveView, Budget, Category, Expense, Profile } from '../types/finance';
+import { ActiveView, DashboardResponse, Expense, InsightResponse, Profile } from '../types/finance';
 import {
   EXPENSE_SOURCE_LABELS,
   PAYMENT_METHOD_LABELS,
   formatCentsBRL,
   formatDateBR,
-  getCurrentMonthSaoPaulo,
+  formatMonthLabel,
+  getCurrentMonthISO,
+  getSaoPauloGreeting,
+  shiftMonthISO,
 } from '../utils/formatters';
 import { CategoryIcon, getCategoryColor } from './CategoryIcon';
 
 interface DashboardViewProps {
   profile: Profile | null;
-  expenses: Expense[];
-  budgets: Budget[];
-  categories: Category[];
+  dashboard: DashboardResponse | undefined;
+  insight?: InsightResponse;
+  isInsightLoading?: boolean;
+  selectedMonth: string;
+  onChangeMonth: (month: string) => void;
   isLoading?: boolean;
+  isFetching?: boolean;
+  isError?: boolean;
+  errorMessage?: string;
+  onRetry?: () => void;
   onNavigate: (view: ActiveView) => void;
   onOpenNewExpense: (initialMode?: 'foto' | 'texto' | 'manual') => void;
   onSelectExpense: (expense: Expense) => void;
@@ -30,67 +45,56 @@ interface DashboardViewProps {
 
 export function DashboardView({
   profile,
-  expenses,
-  budgets,
-  categories,
+  dashboard,
+  insight,
+  isInsightLoading = false,
+  selectedMonth,
+  onChangeMonth,
   isLoading = false,
+  isFetching = false,
+  isError = false,
+  errorMessage,
+  onRetry,
   onNavigate,
   onOpenNewExpense,
   onSelectExpense,
 }: DashboardViewProps) {
   const [hoveredDay, setHoveredDay] = useState<{ day: string; amountCents: number } | null>(null);
-  const currentMonth = getCurrentMonthSaoPaulo();
+  const currentMonthISO = getCurrentMonthISO();
+  const selectedMonthLabel = formatMonthLabel(selectedMonth);
 
-  const totalSpentCents = useMemo(
-    () => expenses.reduce((sum, e) => sum + e.amountCents, 0),
-    [expenses]
-  );
+  const greetingPrefix = getSaoPauloGreeting();
+  const firstName = profile?.displayName?.trim()
+    ? profile.displayName.trim().split(/\s+/)[0]
+    : '';
+  const greetingText = firstName ? `${greetingPrefix}, ${firstName}` : greetingPrefix;
 
+  const totalSpentCents = dashboard?.totalCents ?? 0;
   const totalBudgetCents = useMemo(
-    () => budgets.reduce((sum, b) => sum + b.monthlyLimitCents, 0),
-    [budgets]
+    () => (dashboard?.budgets ?? []).reduce((sum, b) => sum + b.monthlyLimitCents, 0),
+    [dashboard?.budgets]
   );
-
   const remainingBudgetCents = Math.max(0, totalBudgetCents - totalSpentCents);
 
   const categoryTotals = useMemo(() => {
-    const categoryLookup = new Map(categories.map((c) => [c.id, c]));
-    const map = new Map<string, { name: string; color: string; amountCents: number }>();
-
-    for (const e of expenses) {
-      const cat = categoryLookup.get(e.categoryId);
-      const name = e.categoryName || cat?.name || 'Outros';
-      const color = e.categoryColor || cat?.color || getCategoryColor(name);
-      const existing = map.get(e.categoryId);
-      if (existing) {
-        existing.amountCents += e.amountCents;
-      } else {
-        map.set(e.categoryId, { name, color, amountCents: e.amountCents });
-      }
-    }
-
-    return Array.from(map.entries())
-      .map(([id, info]) => ({
-        id,
-        ...info,
-        pct: totalSpentCents > 0 ? (info.amountCents / totalSpentCents) * 100 : 0,
-      }))
-      .sort((a, b) => b.amountCents - a.amountCents);
-  }, [expenses, categories, totalSpentCents]);
+    const items = dashboard?.byCategory ?? [];
+    return items.map((cat) => ({
+      id: cat.categoryId,
+      name: cat.categoryName,
+      color: cat.categoryColor || getCategoryColor(cat.categoryName),
+      icon: cat.categoryIcon,
+      amountCents: cat.totalCents,
+      pct: totalSpentCents > 0 ? (cat.totalCents / totalSpentCents) * 100 : 0,
+    }));
+  }, [dashboard?.byCategory, totalSpentCents]);
 
   const dailySeries = useMemo(() => {
-    const byDate = new Map<string, number>();
-    for (const e of expenses) {
-      byDate.set(e.expenseDate, (byDate.get(e.expenseDate) || 0) + e.amountCents);
-    }
-    return Array.from(byDate.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([date, amountCents]) => ({
-        date,
-        day: date.slice(8, 10),
-        amountCents,
-      }));
-  }, [expenses]);
+    return (dashboard?.byDay ?? []).map((d) => ({
+      date: d.expenseDate,
+      day: d.expenseDate.slice(8, 10),
+      amountCents: d.totalCents,
+    }));
+  }, [dashboard?.byDay]);
 
   const maxDailyCents = useMemo(
     () => Math.max(...dailySeries.map((d) => d.amountCents), 1),
@@ -98,9 +102,10 @@ export function DashboardView({
   );
 
   const averageDailyCents = useMemo(() => {
-    if (dailySeries.length === 0) return 0;
-    return Math.round(totalSpentCents / dailySeries.length);
-  }, [dailySeries.length, totalSpentCents]);
+    const activeDays = dashboard?.activeDays ?? 0;
+    if (activeDays === 0) return 0;
+    return Math.round(totalSpentCents / activeDays);
+  }, [dashboard?.activeDays, totalSpentCents]);
 
   const donutSegments = useMemo(() => {
     const radius = 54;
@@ -118,14 +123,48 @@ export function DashboardView({
     });
   }, [categoryTotals]);
 
-  const greetingName = profile?.displayName ? `, ${profile.displayName.split(' ')[0]}` : '';
+  const MonthSelector = (
+    <div className="inline-flex items-center gap-1 rounded-xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] p-1">
+      <button
+        type="button"
+        onClick={() => onChangeMonth(shiftMonthISO(selectedMonth, -1))}
+        className="p-1.5 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#1C2025] transition-colors"
+        aria-label="Mês anterior"
+        title="Mês anterior"
+      >
+        <ChevronLeft className="w-4 h-4" />
+      </button>
+      <span className="px-2.5 text-xs font-semibold text-slate-900 dark:text-white whitespace-nowrap min-w-[132px] text-center">
+        {selectedMonthLabel}
+      </span>
+      <button
+        type="button"
+        onClick={() => onChangeMonth(shiftMonthISO(selectedMonth, 1))}
+        disabled={selectedMonth >= currentMonthISO}
+        className="p-1.5 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#1C2025] disabled:opacity-35 disabled:pointer-events-none transition-colors"
+        aria-label="Próximo mês"
+        title="Próximo mês"
+      >
+        <ChevronRight className="w-4 h-4" />
+      </button>
+      {selectedMonth !== currentMonthISO && (
+        <button
+          type="button"
+          onClick={() => onChangeMonth(currentMonthISO)}
+          className="px-2 py-1 rounded-lg text-[11px] font-semibold text-emerald-600 dark:text-[#4EDEA3] hover:bg-emerald-500/10 transition-colors"
+        >
+          Atual
+        </button>
+      )}
+    </div>
+  );
 
   if (isLoading) {
     return (
       <div className="space-y-6 animate-pulse">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-4">
           <div className="h-8 w-64 rounded-lg bg-slate-200 dark:bg-[#1C2025]" />
-          <div className="h-9 w-40 rounded-lg bg-slate-200 dark:bg-[#1C2025]" />
+          <div className="h-9 w-48 rounded-lg bg-slate-200 dark:bg-[#1C2025]" />
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           <div className="lg:col-span-7 h-52 rounded-2xl bg-slate-200 dark:bg-[#151B23]" />
@@ -137,18 +176,55 @@ export function DashboardView({
     );
   }
 
-  if (expenses.length === 0) {
+  if (isError) {
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 dark:text-white">
+            {greetingText}
+          </h1>
+          {MonthSelector}
+        </div>
+        <div className="rounded-2xl border border-red-500/30 bg-white dark:bg-[#151B23] p-8 text-center max-w-lg mx-auto space-y-3">
+          <AlertCircle className="w-8 h-8 text-red-500 mx-auto" />
+          <p className="text-sm font-semibold text-slate-900 dark:text-white">
+            Não foi possível carregar o painel
+          </p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            {errorMessage || 'Verifique sua conexão e tente novamente.'}
+          </p>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-[#0B0F14] font-semibold text-xs"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Tentar novamente
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (!dashboard || dashboard.expenseCount === 0) {
     return (
       <div className="space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 dark:text-white">
-              Olá{greetingName}
+              {greetingText}
             </h1>
             <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-              {currentMonth.label} · Comece registrando suas despesas para visualizar análises.
+              {selectedMonthLabel} ·{' '}
+              {dashboard?.hasAnyExpense
+                ? 'Sem despesas registradas neste mês.'
+                : 'Comece registrando suas despesas para visualizar análises.'}
             </p>
           </div>
+
+          {MonthSelector}
         </div>
 
         <div className="rounded-2xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] p-10 sm:p-14 flex flex-col items-center text-center max-w-2xl mx-auto my-8">
@@ -159,24 +235,26 @@ export function DashboardView({
             Registre sua primeira despesa
           </h2>
           <p className="text-sm text-slate-500 dark:text-slate-400 max-w-md mt-2 leading-relaxed">
-            Envie a foto de um comprovante, descreva o gasto em texto livre, grave um áudio ou preencha manualmente para acompanhar seu mês em tempo real.
+            {dashboard?.hasAnyExpense
+              ? `Nenhuma despesa foi encontrada em ${selectedMonthLabel}. Adicione um novo lançamento ou navegue para outro mês.`
+              : 'Envie a foto de um comprovante, descreva o gasto em texto livre ou preencha manualmente para acompanhar seu mês em tempo real.'}
           </p>
           <div className="flex flex-wrap items-center justify-center gap-3 mt-6">
             <button
               type="button"
-              onClick={() => onOpenNewExpense('foto')}
+              onClick={() => onOpenNewExpense('manual')}
               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-[#0B0F14] font-semibold text-sm transition-colors"
             >
-              <ScanLine className="w-4 h-4" />
-              Escanear Comprovante
+              <Plus className="w-4 h-4" />
+              Registrar Despesa Manual
             </button>
             <button
               type="button"
-              onClick={() => onOpenNewExpense('manual')}
+              onClick={() => onOpenNewExpense('foto')}
               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl border border-slate-200 dark:border-[#222C38] hover:bg-slate-100 dark:hover:bg-[#1C2025] text-sm font-medium text-slate-700 dark:text-slate-200 transition-colors"
             >
-              <Plus className="w-4 h-4" />
-              Preencher Manualmente
+              <ScanLine className="w-4 h-4 text-emerald-500" />
+              Escanear Comprovante
             </button>
           </div>
         </div>
@@ -184,35 +262,66 @@ export function DashboardView({
     );
   }
 
+  const variationPct = dashboard.variationPct;
+  const variationIsUp = variationPct !== null && variationPct > 0;
+  const variationIsDown = variationPct !== null && variationPct < 0;
+
   return (
-    <div className="space-y-6">
+    <div className={`space-y-6 transition-opacity ${isFetching ? 'opacity-80' : 'opacity-100'}`}>
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 dark:text-white">
-            Olá{greetingName}
+            {greetingText}
           </h1>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-            Resumo financeiro · {currentMonth.label}
+            Resumo financeiro · {selectedMonthLabel}
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => onOpenNewExpense('foto')}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] hover:bg-slate-50 dark:hover:bg-[#1C2025] text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors self-start md:self-auto whitespace-nowrap"
-        >
-          <ScanLine className="w-4 h-4 text-emerald-500" />
-          <span>Escanear Recibo</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5">
+          {MonthSelector}
+          <button
+            type="button"
+            onClick={() => onOpenNewExpense('manual')}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] hover:bg-slate-50 dark:hover:bg-[#1C2025] text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors whitespace-nowrap"
+          >
+            <Plus className="w-4 h-4 text-emerald-500" />
+            <span>Registrar Despesa</span>
+          </button>
+        </div>
       </div>
 
       {/* Row 1: Hero KPI + Assistant Entry */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
         <section className="lg:col-span-7 rounded-2xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] p-6 flex flex-col justify-between">
           <div>
-            <span className="text-sm font-medium text-slate-500 dark:text-slate-400">
-              Total Gasto no Período
-            </span>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="text-sm font-medium text-slate-500 dark:text-slate-400">
+                Total Gasto no Mês
+              </span>
+
+              {variationPct !== null ? (
+                <span
+                  className={`inline-flex items-center gap-1 text-xs font-semibold font-mono-tabular px-2 py-1 rounded-lg ${
+                    variationIsUp
+                      ? 'bg-red-500/10 text-red-500'
+                      : variationIsDown
+                        ? 'bg-emerald-500/10 text-emerald-600 dark:text-[#4EDEA3]'
+                        : 'bg-slate-100 dark:bg-[#1C2025] text-slate-500 dark:text-slate-400'
+                  }`}
+                >
+                  {variationIsUp && <TrendingUp className="w-3.5 h-3.5" />}
+                  {variationIsDown && <TrendingDown className="w-3.5 h-3.5" />}
+                  {variationPct > 0 ? '+' : ''}
+                  {variationPct.toFixed(1).replace('.', ',')}% vs mês anterior
+                </span>
+              ) : (
+                <span className="text-xs text-slate-400 dark:text-slate-500">
+                  Sem registros no mês anterior ({formatMonthLabel(dashboard.previousMonth)})
+                </span>
+              )}
+            </div>
+
             <div className="mt-2 flex items-baseline gap-3 flex-wrap">
               <span className="text-3xl sm:text-4xl font-bold tracking-tight text-slate-900 dark:text-white font-mono-tabular">
                 {formatCentsBRL(totalSpentCents)}
@@ -223,13 +332,18 @@ export function DashboardView({
                 </span>
               )}
             </div>
+            {dashboard.previousTotalCents > 0 && (
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 font-mono-tabular">
+                Mês anterior: {formatCentsBRL(dashboard.previousTotalCents)}
+              </p>
+            )}
           </div>
 
           <div className="mt-6 pt-5 border-t border-slate-100 dark:border-[#222C38] grid grid-cols-2 sm:grid-cols-3 gap-4">
             <div>
               <p className="text-xs text-slate-500 dark:text-slate-400">Lançamentos</p>
               <p className="text-base font-semibold text-slate-900 dark:text-white font-mono-tabular mt-0.5">
-                {expenses.length}
+                {dashboard.expenseCount}
               </p>
             </div>
             <div>
@@ -255,16 +369,31 @@ export function DashboardView({
           }}
         >
           <div>
-            <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-violet-700 dark:text-violet-300">
-              <Sparkles className="w-3.5 h-3.5" />
-              Assistente Financeiro IA
-            </span>
+            <div className="flex items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-violet-700 dark:text-violet-300">
+                <Sparkles className="w-3.5 h-3.5" />
+                {insight?.fromAi ? 'Insight da IA' : 'Assistente Financeiro IA'}
+              </span>
+              {insight?.cached && (
+                <span className="text-[11px] text-slate-400 dark:text-slate-500">
+                  {selectedMonthLabel}
+                </span>
+              )}
+            </div>
             <h2 className="text-lg font-semibold text-slate-900 dark:text-white mt-3">
-              Converse com suas despesas
+              {insight?.fromAi ? 'Resumo inteligente do mês' : 'Converse com suas despesas'}
             </h2>
-            <p className="text-sm text-slate-600 dark:text-slate-300 mt-1.5 leading-relaxed">
-              Pergunte em linguagem natural quanto gastou em qualquer categoria, encontre seus maiores lançamentos ou peça sugestões de economia.
-            </p>
+            {isInsightLoading ? (
+              <div className="mt-2.5 space-y-2 animate-pulse">
+                <div className="h-3.5 w-full rounded bg-violet-500/15" />
+                <div className="h-3.5 w-4/5 rounded bg-violet-500/15" />
+              </div>
+            ) : (
+              <p className="text-sm text-slate-600 dark:text-slate-300 mt-1.5 leading-relaxed">
+                {insight?.insight ||
+                  'Pergunte em linguagem natural quanto gastou em qualquer categoria, encontre seus maiores lançamentos ou peça sugestões de economia.'}
+              </p>
+            )}
           </div>
 
           <div className="mt-5 flex flex-wrap items-center gap-2.5">
@@ -419,7 +548,7 @@ export function DashboardView({
         </section>
       </div>
 
-      {/* Row 3: Orçamentos + Últimas Despesas */}
+      {/* Row 3: Orçamentos + Últimas 5 Despesas */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         <section className="lg:col-span-5 rounded-2xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] p-6">
           <div className="flex items-center justify-between mb-5">
@@ -441,7 +570,7 @@ export function DashboardView({
             </button>
           </div>
 
-          {budgets.length === 0 ? (
+          {dashboard.budgets.length === 0 ? (
             <div className="py-6 text-center space-y-2">
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 Nenhum orçamento mensal definido ainda.
@@ -456,12 +585,19 @@ export function DashboardView({
             </div>
           ) : (
             <div className="space-y-4">
-              {budgets.slice(0, 5).map((b) => {
+              {dashboard.budgets.slice(0, 5).map((b) => {
                 const pct =
                   b.monthlyLimitCents > 0
                     ? Math.round((b.spentCents / b.monthlyLimitCents) * 100)
                     : 0;
-                const isDanger = pct > 90;
+                const isOver = pct > 100;
+                const isWarning = pct >= 80 && pct <= 100;
+                const barColor = isOver ? '#EF4444' : isWarning ? '#F59E0B' : '#10B981';
+                const textColorClass = isOver
+                  ? 'text-red-500'
+                  : isWarning
+                    ? 'text-amber-600 dark:text-amber-400'
+                    : 'text-emerald-600 dark:text-[#4EDEA3]';
                 return (
                   <div key={b.categoryId} className="space-y-1.5">
                     <div className="flex items-center justify-between text-xs">
@@ -475,14 +611,8 @@ export function DashboardView({
                         <span className="text-slate-400 dark:text-slate-500">
                           / {formatCentsBRL(b.monthlyLimitCents)}
                         </span>
-                        <span
-                          className={`font-semibold ${
-                            isDanger
-                              ? 'text-red-500'
-                              : 'text-emerald-600 dark:text-[#4EDEA3]'
-                          }`}
-                        >
-                          {pct > 100 ? 'Excedido' : `${pct}%`}
+                        <span className={`font-semibold ${textColorClass}`}>
+                          {isOver ? 'Excedido' : `${pct}%`}
                         </span>
                       </div>
                     </div>
@@ -491,7 +621,7 @@ export function DashboardView({
                         className="h-full rounded-full transition-all duration-300"
                         style={{
                           width: `${Math.min(100, pct)}%`,
-                          backgroundColor: isDanger ? '#EF4444' : b.categoryColor,
+                          backgroundColor: barColor,
                         }}
                       />
                     </div>
@@ -509,7 +639,7 @@ export function DashboardView({
                 Últimas Despesas
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Lançamentos mais recentes
+                5 lançamentos mais recentes de {selectedMonthLabel}
               </p>
             </div>
             <button
@@ -517,13 +647,13 @@ export function DashboardView({
               onClick={() => onNavigate('expenses')}
               className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-[#4EDEA3] hover:underline whitespace-nowrap"
             >
-              Ver todas ({expenses.length})
+              Ver todas ({dashboard.expenseCount})
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
 
           <div className="divide-y divide-slate-100 dark:divide-[#222C38]">
-            {expenses.slice(0, 6).map((exp) => {
+            {dashboard.recentExpenses.map((exp) => {
               const catName = exp.categoryName || 'Outros';
               const catColor = exp.categoryColor || getCategoryColor(catName);
               const isAi = exp.source !== 'manual';
@@ -542,7 +672,7 @@ export function DashboardView({
                         color: catColor,
                       }}
                     >
-                      <CategoryIcon category={catName} className="w-4 h-4" />
+                      <CategoryIcon category={catName} icon={exp.categoryIcon} className="w-4 h-4" />
                     </div>
                     <div className="min-w-0">
                       <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">

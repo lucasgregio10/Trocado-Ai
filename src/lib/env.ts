@@ -29,3 +29,8 @@ export function hasClientEnv(): boolean {
       import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim()
   );
 }
+
+export function getTurnstileSiteKey(): string | undefined {
+  const key = import.meta.env.VITE_TURNSTILE_SITE_KEY?.trim();
+  return key ? key : undefined;
+}

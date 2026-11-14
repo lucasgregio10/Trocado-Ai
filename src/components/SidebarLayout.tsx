@@ -11,10 +11,12 @@ import {
   Moon,
   Search,
   Calendar,
+  LogOut,
 } from 'lucide-react';
 import { ActiveView, Profile } from '../types/finance';
 import { TrocadoLogo, SafeImage } from './TrocadoLogo';
 import { getCurrentMonthSaoPaulo } from '../utils/formatters';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface SidebarLayoutProps {
   activeView: ActiveView;
@@ -24,6 +26,7 @@ interface SidebarLayoutProps {
   isDark: boolean;
   onToggleTheme: () => void;
   onQuickSearch: () => void;
+  onSignOut: () => void;
   children: React.ReactNode;
 }
 
@@ -57,6 +60,7 @@ export function SidebarLayout({
   isDark,
   onToggleTheme,
   onQuickSearch,
+  onSignOut,
   children,
 }: SidebarLayoutProps) {
   const currentMonth = getCurrentMonthSaoPaulo();
@@ -98,7 +102,7 @@ export function SidebarLayout({
           })}
         </nav>
 
-        <div className="p-4 border-t border-slate-200 dark:border-[#222C38]">
+        <div className="p-4 border-t border-slate-200 dark:border-[#222C38] space-y-2">
           <button
             type="button"
             onClick={() => onNavigate('settings')}
@@ -118,6 +122,17 @@ export function SidebarLayout({
                 {email}
               </p>
             </div>
+          </button>
+
+          <PWAInstallButton />
+
+          <button
+            type="button"
+            onClick={onSignOut}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-slate-600 dark:text-slate-400 hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+          >
+            <LogOut className="w-4 h-4 shrink-0" />
+            <span>Sair</span>
           </button>
         </div>
       </aside>
@@ -151,7 +166,7 @@ export function SidebarLayout({
             >
               <Search className="w-3.5 h-3.5" />
               <span>Buscar despesas</span>
-              <span className="font-mono-tabular text-[11px] text-slate-400 dark:text-slate-500">⌘K</span>
+              <span className="font-mono-tabular text-[11px] text-slate-500 dark:text-slate-400">⌘K</span>
             </button>
 
             <button

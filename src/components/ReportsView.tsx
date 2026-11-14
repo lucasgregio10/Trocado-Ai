@@ -1,115 +1,95 @@
-import React, { useMemo } from 'react';
-import { Download, Repeat, Store, BarChart3 } from 'lucide-react';
-import { Category, Expense } from '../types/finance';
-import { exportExpensesToCSV, formatCentsBRL } from '../utils/formatters';
-import { getCategoryColor } from './CategoryIcon';
+import React, { useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { Download, Repeat, Store, BarChart3, Loader2, AlertCircle, RefreshCw } from 'lucide-react';
+import { ReportsResponse } from '../types/finance';
+import {
+  formatCentsBRL,
+  formatDateBR,
+  getCurrentMonthISO,
+  getTodaySaoPauloISO,
+  shiftMonthISO,
+} from '../utils/formatters';
+import { apiFetch, downloadAuthenticatedCsv } from '../lib/api';
 
 interface ReportsViewProps {
-  expenses: Expense[];
-  categories: Category[];
-  isLoading?: boolean;
+  userId?: string;
+  onNotify?: (toast: { type: 'success' | 'error'; message: string }) => void;
 }
 
-export function ReportsView({
-  expenses,
-  categories,
-  isLoading = false,
-}: ReportsViewProps) {
-  const categoryMap = useMemo(
-    () => new Map(categories.map((c) => [c.id, c])),
-    [categories]
-  );
+type PeriodPreset = '6m' | '12m' | 'year' | 'custom';
 
-  const totalSpentCents = useMemo(
-    () => expenses.reduce((s, e) => s + e.amountCents, 0),
-    [expenses]
-  );
+export function ReportsView({ userId, onNotify }: ReportsViewProps) {
+  const todayISO = getTodaySaoPauloISO();
+  const currentMonth = getCurrentMonthISO();
 
-  const merchantRanking = useMemo(() => {
-    const map = new Map<string, { amountCents: number; count: number; categoryName: string }>();
-    for (const e of expenses) {
-      const catName = e.categoryName || categoryMap.get(e.categoryId)?.name || 'Outros';
-      const existing = map.get(e.merchant);
-      if (existing) {
-        existing.amountCents += e.amountCents;
-        existing.count += 1;
-      } else {
-        map.set(e.merchant, { amountCents: e.amountCents, count: 1, categoryName: catName });
-      }
+  const [preset, setPreset] = useState<PeriodPreset>('6m');
+  const [customFrom, setCustomFrom] = useState(`${shiftMonthISO(currentMonth, -5)}-01`);
+  const [customTo, setCustomTo] = useState(todayISO);
+  const [isExporting, setIsExporting] = useState(false);
+
+  const { from, to } = useMemo(() => {
+    if (preset === '6m') {
+      return { from: `${shiftMonthISO(currentMonth, -5)}-01`, to: todayISO };
     }
-    return Array.from(map.entries())
-      .map(([merchant, info]) => ({ merchant, ...info }))
-      .sort((a, b) => b.amountCents - a.amountCents)
-      .slice(0, 6);
-  }, [expenses, categoryMap]);
-
-  const recurringCandidates = useMemo(() => {
-    const map = new Map<string, { count: number; totalCents: number; categoryName: string }>();
-    for (const e of expenses) {
-      const catName = e.categoryName || categoryMap.get(e.categoryId)?.name || 'Outros';
-      const existing = map.get(e.merchant);
-      if (existing) {
-        existing.count += 1;
-        existing.totalCents += e.amountCents;
-      } else {
-        map.set(e.merchant, { count: 1, totalCents: e.amountCents, categoryName: catName });
-      }
+    if (preset === '12m') {
+      return { from: `${shiftMonthISO(currentMonth, -11)}-01`, to: todayISO };
     }
-    return Array.from(map.entries())
-      .filter(([, info]) => info.count >= 2)
-      .map(([merchant, info]) => ({
-        merchant,
-        count: info.count,
-        avgCents: Math.round(info.totalCents / info.count),
-        categoryName: info.categoryName,
-      }));
-  }, [expenses, categoryMap]);
-
-  const monthlyStacked = useMemo(() => {
-    const monthBuckets = new Map<
-      string,
-      { totalCents: number; byCategory: Map<string, { name: string; color: string; cents: number }> }
-    >();
-
-    for (const e of expenses) {
-      const ym = e.expenseDate.slice(0, 7);
-      const cat = categoryMap.get(e.categoryId);
-      const catName = e.categoryName || cat?.name || 'Outros';
-      const catColor = e.categoryColor || cat?.color || getCategoryColor(catName);
-
-      if (!monthBuckets.has(ym)) {
-        monthBuckets.set(ym, { totalCents: 0, byCategory: new Map() });
-      }
-      const bucket = monthBuckets.get(ym)!;
-      bucket.totalCents += e.amountCents;
-      const existingCat = bucket.byCategory.get(catName);
-      if (existingCat) {
-        existingCat.cents += e.amountCents;
-      } else {
-        bucket.byCategory.set(catName, { name: catName, color: catColor, cents: e.amountCents });
-      }
+    if (preset === 'year') {
+      return { from: `${todayISO.slice(0, 4)}-01-01`, to: todayISO };
     }
+    const safeFrom = customFrom && customFrom <= (customTo || todayISO) ? customFrom : todayISO;
+    const safeTo = customTo || todayISO;
+    return { from: safeFrom, to: safeTo };
+  }, [preset, currentMonth, todayISO, customFrom, customTo]);
 
-    return Array.from(monthBuckets.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .slice(-6)
-      .map(([ym, info]) => {
-        const [y, m] = ym.split('-');
-        return {
-          ym,
-          label: `${m}/${y}`,
-          totalCents: info.totalCents,
-          segments: Array.from(info.byCategory.values()),
-        };
-      });
-  }, [expenses, categoryMap]);
+  const reportsQuery = useQuery({
+    queryKey: ['reports', userId, from, to],
+    queryFn: () =>
+      apiFetch<ReportsResponse>(
+        `/api/reports?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
+      ),
+    enabled: Boolean(userId && from && to && from <= to),
+  });
+
+  const data = reportsQuery.data;
+  const monthlyByCategory = data?.monthlyByCategory ?? [];
+  const topMerchants = data?.topMerchants ?? [];
+  const recurring = data?.recurring ?? [];
 
   const maxMonthCents = useMemo(
-    () => Math.max(...monthlyStacked.map((m) => m.totalCents), 1),
-    [monthlyStacked]
+    () => Math.max(...monthlyByCategory.map((m) => m.totalCents), 1),
+    [monthlyByCategory]
   );
 
-  if (isLoading) {
+  const legendCategories = useMemo(() => {
+    const map = new Map<string, { name: string; color: string }>();
+    for (const m of monthlyByCategory) {
+      for (const c of m.categories) {
+        if (!map.has(c.categoryId)) {
+          map.set(c.categoryId, { name: c.categoryName, color: c.categoryColor });
+        }
+      }
+    }
+    return Array.from(map.values());
+  }, [monthlyByCategory]);
+
+  const handleExportCsv = async () => {
+    if (isExporting) return;
+    setIsExporting(true);
+    try {
+      await downloadAuthenticatedCsv(from, to);
+      onNotify?.({ type: 'success', message: 'Arquivo CSV baixado!' });
+    } catch (err) {
+      onNotify?.({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Não foi possível exportar o CSV.',
+      });
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  if (reportsQuery.isLoading) {
     return (
       <div className="space-y-6 animate-pulse">
         <div className="h-8 w-64 rounded-lg bg-slate-200 dark:bg-[#1C2025]" />
@@ -131,120 +111,225 @@ export function ReportsView({
             Relatórios & Análise de Tendências
           </h1>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-            Comparativo mensal por categoria, ranking de estabelecimentos e recorrências detectadas.
+            Comparativo mensal por categoria, top 10 estabelecimentos e recorrências em 3+ meses.
           </p>
         </div>
 
         <button
           type="button"
-          disabled={expenses.length === 0}
-          onClick={() => exportExpensesToCSV(expenses)}
+          disabled={isExporting || (data?.expenseCount ?? 0) === 0}
+          onClick={handleExportCsv}
           className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-[#0B0F14] font-semibold text-sm transition-colors self-start md:self-auto whitespace-nowrap"
         >
-          <Download className="w-4 h-4" />
-          Exportar CSV
+          {isExporting ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <Download className="w-4 h-4" />
+          )}
+          {isExporting ? 'Exportando...' : 'Exportar CSV'}
         </button>
       </div>
 
-      {expenses.length === 0 ? (
+      {/* Period Filters */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] p-4">
+        <div className="inline-flex flex-wrap p-1 rounded-xl bg-slate-100 dark:bg-[#0B0F14] border border-slate-200 dark:border-[#222C38] gap-1">
+          {[
+            { id: '6m', label: 'Últimos 6 meses' },
+            { id: '12m', label: 'Últimos 12 meses' },
+            { id: 'year', label: `Ano ${todayISO.slice(0, 4)}` },
+            { id: 'custom', label: 'Personalizado' },
+          ].map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setPreset(item.id as PeriodPreset)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${
+                preset === item.id
+                  ? 'bg-white dark:bg-[#222C38] text-slate-900 dark:text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        {preset === 'custom' ? (
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <label className="text-slate-500 dark:text-slate-400" htmlFor="report-from">
+              De:
+            </label>
+            <input
+              id="report-from"
+              type="date"
+              value={customFrom}
+              max={customTo || todayISO}
+              onChange={(e) => setCustomFrom(e.target.value)}
+              className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-[#222C38] bg-slate-50 dark:bg-[#0B0F14] text-slate-900 dark:text-white font-mono-tabular"
+            />
+            <label className="text-slate-500 dark:text-slate-400" htmlFor="report-to">
+              Até:
+            </label>
+            <input
+              id="report-to"
+              type="date"
+              value={customTo}
+              min={customFrom}
+              max={todayISO}
+              onChange={(e) => setCustomTo(e.target.value)}
+              className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-[#222C38] bg-slate-50 dark:bg-[#0B0F14] text-slate-900 dark:text-white font-mono-tabular"
+            />
+          </div>
+        ) : (
+          <span className="text-xs text-slate-500 dark:text-slate-400 font-mono-tabular">
+            Período: {formatDateBR(from)} até {formatDateBR(to)}
+          </span>
+        )}
+      </div>
+
+      {reportsQuery.isError ? (
+        <div className="rounded-2xl border border-red-500/30 bg-white dark:bg-[#151B23] p-8 text-center space-y-3">
+          <AlertCircle className="w-8 h-8 text-red-500 mx-auto" />
+          <p className="text-sm font-semibold text-slate-900 dark:text-white">
+            Não foi possível carregar os relatórios
+          </p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            {reportsQuery.error instanceof Error
+              ? reportsQuery.error.message
+              : 'Erro ao consultar relatórios.'}
+          </p>
+          <button
+            type="button"
+            onClick={() => reportsQuery.refetch()}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-[#0B0F14] font-semibold text-xs"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            Tentar novamente
+          </button>
+        </div>
+      ) : !data || data.expenseCount === 0 ? (
         <div className="rounded-2xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] p-12 text-center space-y-2">
           <BarChart3 className="w-8 h-8 text-emerald-500 mx-auto" />
           <p className="text-sm font-medium text-slate-900 dark:text-white">
-            Sem dados suficientes para relatórios.
+            Nenhuma despesa encontrada neste período.
           </p>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            Registre suas primeiras despesas para visualizar comparativos mensais e rankings.
+            Ajuste o intervalo de datas acima ou registre novas despesas para visualizar gráficos e rankings.
           </p>
         </div>
       ) : (
         <>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="rounded-2xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] p-5">
-              <p className="text-xs text-slate-500 dark:text-slate-400">Despesas Totais</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Despesas no Período</p>
               <p className="text-xl font-bold text-slate-900 dark:text-white font-mono-tabular mt-1">
-                {formatCentsBRL(totalSpentCents)}
+                {formatCentsBRL(data.totalCents)}
               </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                {expenses.length} lançamentos
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 font-mono-tabular">
+                {data.expenseCount} {data.expenseCount === 1 ? 'lançamento' : 'lançamentos'}
               </p>
             </div>
 
             <div className="rounded-2xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] p-5">
               <p className="text-xs text-slate-500 dark:text-slate-400">Estabelecimento Líder</p>
               <p className="text-xl font-bold text-slate-900 dark:text-white truncate mt-1">
-                {merchantRanking[0]?.merchant || '—'}
+                {topMerchants[0]?.merchant || '—'}
               </p>
               <p className="text-xs text-slate-500 dark:text-slate-400 font-mono-tabular mt-1">
-                {merchantRanking[0] ? formatCentsBRL(merchantRanking[0].amountCents) : ''}
+                {topMerchants[0] ? formatCentsBRL(topMerchants[0].totalCents) : ''}
               </p>
             </div>
 
             <div className="rounded-2xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] p-5">
               <p className="text-xs text-slate-500 dark:text-slate-400">Recorrências Detectadas</p>
               <p className="text-xl font-bold text-violet-600 dark:text-violet-300 font-mono-tabular mt-1">
-                {recurringCandidates.length}
+                {recurring.length}
               </p>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                Estabelecimentos com 2+ lançamentos
+                Valor similar (±10%) em 3+ meses
               </p>
             </div>
           </div>
 
           <section className="rounded-2xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] p-6 space-y-6">
-            <div>
-              <h2 className="text-base font-semibold text-slate-900 dark:text-white">
-                Comparativo Mensal por Categoria
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Barras empilhadas baseadas nas despesas registradas
-              </p>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h2 className="text-base font-semibold text-slate-900 dark:text-white">
+                  Comparativo Mensal por Categoria
+                </h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  Total mensal em barras empilhadas por categoria
+                </p>
+              </div>
+
+              {legendCategories.length > 0 && (
+                <div className="flex flex-wrap gap-3">
+                  {legendCategories.map((cat) => (
+                    <div key={cat.name} className="inline-flex items-center gap-1.5 text-xs">
+                      <span
+                        className="w-2.5 h-2.5 rounded-xs shrink-0"
+                        style={{ backgroundColor: cat.color }}
+                      />
+                      <span className="text-slate-600 dark:text-slate-300">{cat.name}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
-            <div className="flex items-end gap-4 sm:gap-8 h-56 pt-4 overflow-x-auto">
-              {monthlyStacked.map((m) => (
-                <div
-                  key={m.ym}
-                  className="flex-1 min-w-[72px] flex flex-col items-center h-full justify-end gap-2"
-                >
-                  <span className="text-xs font-mono-tabular font-semibold text-slate-700 dark:text-slate-200">
-                    {formatCentsBRL(m.totalCents)}
-                  </span>
-                  <div className="w-full max-w-[68px] flex-1 flex flex-col justify-end rounded-t-xl overflow-hidden">
-                    {m.segments.map((seg) => {
-                      const heightPct = (seg.cents / maxMonthCents) * 100;
-                      return (
-                        <div
-                          key={seg.name}
-                          style={{
-                            height: `${heightPct}%`,
-                            backgroundColor: seg.color,
-                          }}
-                          title={`${seg.name}: ${formatCentsBRL(seg.cents)}`}
-                          className="w-full border-b border-white/20 dark:border-[#0B0F14]/30 last:border-b-0"
-                        />
-                      );
-                    })}
+            <div className="flex items-end gap-4 sm:gap-8 h-60 pt-4 overflow-x-auto">
+              {monthlyByCategory.map((m) => {
+                const [y, mon] = m.month.split('-');
+                return (
+                  <div
+                    key={m.month}
+                    className="flex-1 min-w-[72px] flex flex-col items-center h-full justify-end gap-2"
+                  >
+                    <span className="text-xs font-mono-tabular font-semibold text-slate-700 dark:text-slate-200 whitespace-nowrap">
+                      {formatCentsBRL(m.totalCents)}
+                    </span>
+                    <div className="w-full max-w-[68px] flex-1 flex flex-col justify-end rounded-t-xl overflow-hidden bg-slate-100/40 dark:bg-[#0B0F14]/40">
+                      {m.categories.map((seg) => {
+                        const heightPct = (seg.totalCents / maxMonthCents) * 100;
+                        return (
+                          <div
+                            key={seg.categoryId}
+                            style={{
+                              height: `${heightPct}%`,
+                              backgroundColor: seg.categoryColor,
+                            }}
+                            title={`${seg.categoryName}: ${formatCentsBRL(seg.totalCents)}`}
+                            className="w-full border-b border-white/20 dark:border-[#0B0F14]/30 last:border-b-0 transition-all duration-300"
+                          />
+                        );
+                      })}
+                    </div>
+                    <span className="text-xs font-mono-tabular text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                      {mon}/{y}
+                    </span>
                   </div>
-                  <span className="text-xs font-mono-tabular text-slate-500 dark:text-slate-400 whitespace-nowrap">
-                    {m.label}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </section>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <section className="rounded-2xl border border-slate-200 dark:border-[#222C38] bg-white dark:bg-[#151B23] p-6 space-y-4">
-              <div className="flex items-center gap-2">
-                <Store className="w-4 h-4 text-emerald-500" />
-                <h2 className="text-base font-semibold text-slate-900 dark:text-white">
-                  Ranking de Estabelecimentos
-                </h2>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Store className="w-4 h-4 text-emerald-500" />
+                  <h2 className="text-base font-semibold text-slate-900 dark:text-white">
+                    Top 10 Estabelecimentos
+                  </h2>
+                </div>
+                <span className="text-xs text-slate-400 dark:text-slate-500 font-mono-tabular">
+                  {topMerchants.length} locais
+                </span>
               </div>
 
               <div className="divide-y divide-slate-100 dark:divide-[#222C38]">
-                {merchantRanking.map((item, idx) => (
-                  <div key={item.merchant} className="py-3 flex items-center justify-between gap-3">
+                {topMerchants.map((item, idx) => (
+                  <div key={`${item.merchant}-${idx}`} className="py-3 flex items-center justify-between gap-3">
                     <div className="flex items-center gap-3 min-w-0">
                       <span className="w-6 h-6 rounded-lg bg-slate-100 dark:bg-[#1C2025] text-xs font-mono-tabular font-semibold flex items-center justify-center text-slate-600 dark:text-slate-300 shrink-0">
                         {idx + 1}
@@ -254,13 +339,13 @@ export function ReportsView({
                           {item.merchant}
                         </p>
                         <p className="text-xs text-slate-500 dark:text-slate-400">
-                          {item.categoryName} · {item.count}{' '}
-                          {item.count === 1 ? 'lançamento' : 'lançamentos'}
+                          {item.categoryName} · {item.expenseCount}{' '}
+                          {item.expenseCount === 1 ? 'lançamento' : 'lançamentos'}
                         </p>
                       </div>
                     </div>
                     <span className="text-sm font-bold text-slate-900 dark:text-white font-mono-tabular shrink-0">
-                      {formatCentsBRL(item.amountCents)}
+                      {formatCentsBRL(item.totalCents)}
                     </span>
                   </div>
                 ))}
@@ -275,20 +360,21 @@ export function ReportsView({
                 </h2>
               </div>
 
-              {recurringCandidates.length === 0 ? (
-                <p className="text-xs text-slate-500 dark:text-slate-400 py-4">
-                  Nenhum estabelecimento recorrente detectado ainda.
+              {recurring.length === 0 ? (
+                <p className="text-xs text-slate-500 dark:text-slate-400 py-4 leading-relaxed">
+                  Nenhum estabelecimento com cobranças de valor similar (±10%) em 3 ou mais meses diferentes neste período.
                 </p>
               ) : (
                 <div className="divide-y divide-slate-100 dark:divide-[#222C38]">
-                  {recurringCandidates.map((sub) => (
+                  {recurring.map((sub) => (
                     <div key={sub.merchant} className="py-3.5 flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-slate-900 dark:text-white">
+                        <p className="text-sm font-medium text-slate-900 dark:text-white truncate">
                           {sub.merchant}
                         </p>
                         <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                          {sub.categoryName} · {sub.count} ocorrências
+                          {sub.categoryName} · {sub.monthsCount} meses distintos · {sub.occurrences}{' '}
+                          ocorrências
                         </p>
                       </div>
                       <span className="text-sm font-bold text-slate-900 dark:text-white font-mono-tabular shrink-0">
